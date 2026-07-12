@@ -65,3 +65,10 @@ class MCPClient:
         for tool in self.tools:
             if tool.get("annotations", {}).get("x-vibe-role") == "context": return str(tool["name"])
         raise RuntimeError("Selected MCP server exposes no context tool")
+
+    def tool_role(self, name: str) -> str | None:
+        for tool in self.tools:
+            if tool.get("name") == name:
+                role = tool.get("annotations", {}).get("x-vibe-role")
+                return str(role) if role else None
+        return None

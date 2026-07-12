@@ -16,8 +16,11 @@ from .skills import read_skill
 
 SYSTEM = """You are a careful tool-calling builder. Use only the tools discovered from the
 attached MCP server. Follow the work-style and platform context provided to you. Inspect before an
-edit, save a complete draft, validate it, publish only a valid draft, and verify the result through
-its real interface. Never invent results or tailor instructions to benchmark examples."""
+edit, save a complete draft, validate it, and publish only a valid draft. After publication, derive
+a small, representative verification suite from the user's requested behavior and run the MCP tool
+marked as verification. If verification fails, inspect its factual feedback, repair the draft, and
+repeat the necessary publish-and-verify cycle. Do not claim completion before verification passes.
+Never invent results or tailor instructions to benchmark examples."""
 
 
 @dataclass
@@ -96,12 +99,16 @@ class Agent:
             context = mcp.call(mcp.context_tool(), {})
             system = SYSTEM + f"\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+            verified = False
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             for _ in range(self.c.max_turns):
                 response = self.llm_request(messages, mcp.openai_tools())
                 message = ((response.get("choices") or [{}])[0].get("message") or {}); messages.append(message)
                 calls = message.get("tool_calls") or []
-                if not calls: print(str(message.get("content") or "Completed.")); return
+                if not calls:
+                    if verified:
+                        print(str(message.get("content") or "Completed.")); return
+                    raise RuntimeError("agent stopped before the MCP verification tool passed")
                 for call in calls:
                     function = call.get("function") or {}; name = str(function.get("name", ""))
                     try: arguments = json.loads(function.get("arguments") or "{}")
@@ -110,7 +117,17 @@ class Agent:
                     result = mcp.call(name, arguments)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
-                    if result.get("terminal"):
+                    role = mcp.tool_role(name)
+                    if role == "verification":
+                        if result.get("passed"):
+                            verified = True
+                            print("Verification suite passed.", flush=True)
+                            return
+                        print("Verification failed; model must repair and retry.", flush=True)
+                    if result.get("dryRun"):
+                        print("Dry-run completed.", flush=True)
+                        return
+                    if result.get("terminal") and role != "publication":
                         if result.get("frontendUrl"): print(f"Frontend URL: {result['frontendUrl']}", flush=True)
                         test = result.get("test") or {}
                         if test.get("reply"): print(f"TEST reply: {test['reply'][:500]}", flush=True)

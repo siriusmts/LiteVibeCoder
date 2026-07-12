@@ -22,7 +22,7 @@ class McpIntegrationTests(unittest.TestCase):
 
     def test_discovers_tools_from_mcp_server(self):
         names = {tool["name"] for tool in self.client.tools}
-        self.assertTrue({"platform_contract", "save_draft", "publish_draft", "test_published_bot"}.issubset(names))
+        self.assertTrue({"platform_contract", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"}.issubset(names))
         self.assertIn("payload", self.client.call(self.client.context_tool(), {}))
 
     def test_validates_draft_through_mcp(self):
@@ -107,6 +107,15 @@ class McpIntegrationTests(unittest.TestCase):
         runtime.configure({"existingBotId": "bot", "existingVersionId": "version"})
         runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}]}}}})  # type: ignore[method-assign]
         self.assertTrue(runtime.engine_test("hello")["tested"])
+
+    def test_verification_suite_requires_all_assertions(self):
+        runtime = PlatformRuntime()
+        runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
+        runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello catalog"}}], "suggestions": {"buttons": [{"title": "More"}]}}}}})  # type: ignore[method-assign]
+        passed = runtime.verify([{"message": "hello", "expectContains": ["catalog"], "expectButtons": ["More"]}])
+        failed = runtime.verify([{"message": "hello", "expectCommand": "go_operator"}])
+        self.assertTrue(passed["passed"])
+        self.assertFalse(failed["passed"])
 
 
 if __name__ == "__main__":

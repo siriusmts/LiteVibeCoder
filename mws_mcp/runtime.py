@@ -233,7 +233,7 @@ class PlatformRuntime:
         if self.draft: self.artifact("last_platform_payload.json", self.envelope(self.draft))
         return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
 
-    def engine_test(self, message: str | None = None) -> dict[str, Any]:
+    def engine_test(self, message: str | None = None, expect_contains: Any = None, expect_buttons: Any = None, expect_command: Any = None) -> dict[str, Any]:
         bot_id, version_id, _ = self.target(self.last_response)
         if not bot_id:
             bot_id = self.context.get("existingBotId")
@@ -248,10 +248,32 @@ class PlatformRuntime:
         body = {"data": {"type": "engine", "attributes": {"sessionId": f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
         status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         if status >= 500: time.sleep(1); status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
-        try: reply = "\n".join(item.get("bubble", {}).get("value", "") for item in data["data"]["attributes"]["payload"].get("items", []))
+        assertions = {"contains": False, "buttons": False, "command": False}
+        buttons: list[str] = []; commands: list[str] = []
+        try:
+            payload = data["data"]["attributes"]["payload"]
+            reply = "\n".join(item.get("bubble", {}).get("value", "") for item in payload.get("items", []))
+            buttons = [button.get("title", "") for button in payload.get("suggestions", {}).get("buttons", [])]
+            commands = [item.get("command", {}).get("value", "") for item in payload.get("items", []) if isinstance(item.get("command"), dict)]
         except (KeyError, TypeError): reply = ""
+        else:
+            expected_text = expect_contains if isinstance(expect_contains, list) else []
+            expected_buttons = expect_buttons if isinstance(expect_buttons, list) else []
+            assertions = {
+                "contains": all(isinstance(value, str) and value.casefold() in reply.casefold() for value in expected_text),
+                "buttons": all(isinstance(value, str) and value in buttons for value in expected_buttons),
+                "command": not expect_command or expect_command in commands,
+            }
         technical = not reply or "техническая ошибка" in reply.lower() or "technical error" in reply.lower()
-        return {"tested": 200 <= status < 300 and not technical, "status": status, "reply": reply, "technical": technical, "response": self.redact(data)}
+        tested = 200 <= status < 300 and not technical
+        return {"tested": tested, "passed": tested and all(assertions.values()), "status": status, "reply": reply, "buttons": buttons, "commands": commands, "assertions": assertions, "technical": technical, "response": self.redact(data)}
+
+    def verify(self, tests: Any) -> dict[str, Any]:
+        if not isinstance(tests, list) or not tests:
+            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
+        results = [self.engine_test(case.get("message"), case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand")) for case in tests if isinstance(case, dict)]
+        passed = len(results) == len(tests) and all(result.get("passed") for result in results)
+        return {"terminal": passed, "passed": passed, "results": results}
 
     def publish(self) -> dict[str, Any]:
         if not self.draft: return {"terminal": False, "published": False, "error": "no draft saved"}
@@ -269,4 +291,4 @@ class PlatformRuntime:
         if not 200 <= publish_status < 300: return {"terminal": False, "published": False, "status": publish_status, "response": publish_data}
         link = self.frontend_url + self.platform.spec["frontend"]["path"].format(botId=bot_id, versionId=version_id, scenarioId=scenario_id) if scenario_id is not None else ""
         test = self.engine_test(self.context.get("testMessage"))
-        return {"terminal": bool(test.get("tested")), "published": True, "botId": bot_id, "versionId": version_id, "scenarioId": scenario_id, "frontendUrl": link, "test": test}
+        return {"terminal": False, "published": True, "botId": bot_id, "versionId": version_id, "scenarioId": scenario_id, "frontendUrl": link, "test": test}

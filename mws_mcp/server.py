@@ -14,8 +14,9 @@ TOOLS = [
     {"name": "inspect_existing_bot", "description": "Read the configured existing bot before an update.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
     {"name": "save_draft", "description": "Save and validate a draft bot attributes object.", "inputSchema": {"type": "object", "properties": {"bot": {"type": "object"}}, "required": ["bot"]}},
     {"name": "validate_draft", "description": "Validate the saved draft.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
-    {"name": "publish_draft", "description": "Import, publish, and smoke-test the saved valid draft; honours dry-run.", "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "test_published_bot", "description": "Send an independent engine message to the published bot.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}}},
+    {"name": "publish_draft", "description": "Import and publish the saved valid draft; honours dry-run.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"x-vibe-role": "publication"}},
+    {"name": "test_published_bot", "description": "Send one independent engine message; optional assertions are evaluated against the visible reply, suggestions, and commands.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "expectContains": {"type": "array", "items": {"type": "string"}}, "expectButtons": {"type": "array", "items": {"type": "string"}}, "expectCommand": {"type": "string"}}}},
+    {"name": "verify_published_bot", "description": "Run a model-defined independent black-box test suite against the published bot. Use this to prove the requested paths work before completion.", "inputSchema": {"type": "object", "properties": {"tests": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"message": {"type": "string"}, "expectContains": {"type": "array", "items": {"type": "string"}}, "expectButtons": {"type": "array", "items": {"type": "string"}}, "expectCommand": {"type": "string"}}, "required": ["message"]}}}, "required": ["tests"]}, "annotations": {"x-vibe-role": "verification"}},
 ]
 
 
@@ -30,7 +31,8 @@ def call(name: str, args: dict[str, Any]) -> Any:
     if name == "validate_draft":
         errors = RUNTIME.validate(RUNTIME.draft); return {"valid": not errors, "errors": errors}
     if name == "publish_draft": return RUNTIME.publish()
-    if name == "test_published_bot": return RUNTIME.engine_test(args.get("message"))
+    if name == "test_published_bot": return RUNTIME.engine_test(args.get("message"), args.get("expectContains"), args.get("expectButtons"), args.get("expectCommand"))
+    if name == "verify_published_bot": return RUNTIME.verify(args.get("tests"))
     raise ValueError(f"Unknown MCP tool: {name}")
 
 
