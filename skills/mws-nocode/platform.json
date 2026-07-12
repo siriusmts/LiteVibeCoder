@@ -17,11 +17,15 @@
     "exactFields": {"engineType": "langgraph-engine"},
     "patternFields": {"botName": "[a-z0-9_]{3,64}"},
     "enumFields": {"needPreprocess": ["disabled", "required", "optional"]},
-    "scenariosField": "scenarios", "scenarioNameField": "name", "entryEdgesField": "entryEdges", "nodesField": "nodes", "nodeIdField": "id", "nodeNameField": "name", "blocksField": "blocks", "entryEvent": {"type": "event", "value": "init"}, "blockIdField": "id", "blockTypeField": "type", "answerType": "answer", "answerValueField": "value"
+    "scenariosField": "scenarios", "scenarioNameField": "name", "entryEdgesField": "entryEdges", "nodesField": "nodes", "nodeIdField": "id", "nodeNameField": "name", "blocksField": "blocks", "entryEvent": {"type": "event", "value": "init"}, "blockIdField": "id", "blockTypeField": "type", "answerType": "answer", "answerValueField": "value",
+    "interactive": {"buttonsType": "buttons", "buttonsField": "buttons", "buttonTitleField": "title", "targetNodeField": "target_node_id", "waitForUserType": "wait_for_user"}
+  },
+  "normalization": {
+    "entryEdges": {"targetField": "target_node_id", "targetAliases": ["targetNodeId", "sourceNodeId"], "eventAlias": "sourceEvent", "typeField": "type", "valueField": "value", "eventType": "event"}
   },
   "contract": {
     "draft": "Supply a bot attributes object that validates against platform.json.",
-    "graph": "Each scenario has a name, an event/init entry edge, nodes with unique ids and names, and nonempty blocks. Answer blocks have id, tags:null, type:answer, and value:text.",
+    "graph": "Each scenario has a name, an event/init entry edge, nodes with unique ids and names, and nonempty blocks. Answer blocks have id, tags:null, type:answer, and value:text. Interactive menus use buttons [{title,target_node_id}] followed by wait_for_user; targets must refer to existing nodes.",
     "required": ["name", "changesMessage", "botName", "engineType", "requestTtlInSeconds", "noMatchStubAnswer", "needPreprocess", "scenarios"]
   }
 }

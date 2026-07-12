@@ -20,7 +20,7 @@ class PlatformSkill:
         if not skill_file.is_file() or not spec_file.is_file():
             raise RuntimeError(f"Platform skill must contain SKILL.md and platform.json: {root}")
         spec = json.loads(spec_file.read_text(encoding="utf-8"))
-        for key in ("routes", "headers", "validation", "payload", "response", "frontend"):
+        for key in ("routes", "headers", "validation", "payload", "response", "frontend", "normalization"):
             if not isinstance(spec.get(key), dict):
                 raise RuntimeError(f"Platform skill {root} has no object '{key}' in platform.json")
         return cls(root=root, instructions=skill_file.read_text(encoding="utf-8").strip(), spec=spec)

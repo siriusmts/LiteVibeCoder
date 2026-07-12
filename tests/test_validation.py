@@ -36,6 +36,19 @@ class ValidationTests(unittest.TestCase):
     def test_loads_platform_route_from_skill_pack(self):
         self.assertEqual(self.agent().platform_url("publish", botId=1, versionId=2), "http://example/api/v3/nocode/bots/1/bot-versions/2/publish/")
 
+    def test_extracts_target_with_scenario_from_skill_response(self):
+        response = {"data": {"attributes": {"botId": 1, "id": 2, "scenarios": [{"id": 3}]}}}
+        self.assertEqual(self.agent().target(response), (1, 2, 3))
+
+    def test_rejects_entry_edge_without_target_node(self):
+        bot = {"name": "First version", "changesMessage": "Initial bot", "botName": "sample_bot", "engineType": "langgraph-engine", "requestTtlInSeconds": 30, "noMatchStubAnswer": "Please try again", "needPreprocess": "disabled", "scenarios": [{"name": "main", "entryEdges": [{"id": "init", "type": "event", "value": "init"}], "nodes": [{"id": "start", "name": "Start", "blocks": [{"id": "answer", "type": "answer", "value": "Hello"}]}]}]}
+        self.assertTrue(self.agent().validate(bot))
+
+    def test_normalizes_skill_declared_entry_edge_aliases(self):
+        bot = {"name": "First version", "changesMessage": "Initial bot", "botName": "sample_bot", "engineType": "langgraph-engine", "requestTtlInSeconds": 30, "noMatchStubAnswer": "Please try again", "needPreprocess": "disabled", "scenarios": [{"name": "main", "entryEdges": [{"sourceNodeId": "start", "sourceEvent": "init"}], "nodes": [{"id": "start", "name": "Start", "blocks": [{"id": "answer", "type": "answer", "value": "Hello"}]}]}]}
+        normalized = self.agent().normalize_draft(bot)
+        self.assertEqual(self.agent().validate(normalized), [])
+
 
 if __name__ == "__main__":
     unittest.main()

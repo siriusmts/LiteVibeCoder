@@ -23,6 +23,10 @@
 - Frontend links now require and include `activeScenarioId`. Existing live links are `/projects/3927?botVersionId=6481&activeScenarioId=15142` and `/projects/3929?botVersionId=6483&activeScenarioId=15146`.
 - A GUI-mode dry-run revealed that a text-only skill was insufficient for model construction. `platform_contract` now returns the loaded payload and validation sections from the selected skill pack; tool names are logged so stalled loops remain diagnosable without exposing secrets.
 - Update mode was exercised against existing bot `3927` in dry-run. The sequence was `inspect_existing_bot → save_draft → platform_contract → save_draft → publish_draft`; the updated payload validated and no platform write was made.
+- Interactive bot version `6552` exposed a missing `target_node_id` on its init edge only at engine runtime. The graph validator now rejects every entry edge without a target; a repaired version is pending publication.
+- A Hello World update exposed a model loop that used an unsupported edge shape before invoking `platform_contract`. The loaded machine-readable contract is now attached at the start of every model run, while invalid-draft reasons are printed safely for diagnosis.
+- Skill-declared normalization now maps alternate entry-edge aliases before validation. This produced and published Hello World version `6579`, scenario `15351`; two independent inputs both returned exactly `Hello World!`.
+- Interactive joke-bot version `6566`, scenario `15321`, is published. In one UTF-8 session it returned the category menu for `привет`, an IT joke plus `Ещё`/category-change buttons for `IT`, and another valid joke for text `Ещё`.
 
 ## Next checkpoint
 

@@ -97,7 +97,7 @@ class Agent:
         if not isinstance(response, dict):
             return {}
         data = response.get(spec["dataKey"])
-        return data.get(spec["attributes"], {}) if isinstance(data, dict) else {}
+        return data.get(spec["attributesKey"], {}) if isinstance(data, dict) else {}
 
     def target(self, response: Any) -> tuple[Any, Any, Any]:
         attrs, spec = self.attributes(response), self.platform.spec["response"]
@@ -158,6 +158,11 @@ class Agent:
             elif not any(all(edge.get(key) == value for key, value in rules["entryEvent"].items()) for edge in edges if isinstance(edge, dict)): errors.append(f"scenario {index} needs its required entry event")
             nodes = scenario.get(rules["nodesField"])
             if not isinstance(nodes, list) or not nodes: errors.append(f"scenario {index} needs nodes"); continue
+            scenario_ids = {str(node.get(rules["nodeIdField"])) for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])}
+            target_key = rules["interactive"]["targetNodeField"]
+            for edge in edges if isinstance(edges, list) else []:
+                target = edge.get(target_key) if isinstance(edge, dict) else None
+                if target is None or str(target) not in scenario_ids: errors.append(f"scenario {index} has an entry edge to an unknown node: {target}")
             for node in nodes:
                 if not isinstance(node, dict) or not node.get(rules["nodeIdField"]): errors.append(f"scenario {index} has a node without id"); continue
                 node_id = str(node[rules["nodeIdField"]])
@@ -170,7 +175,37 @@ class Agent:
                     for block in blocks:
                         if not isinstance(block, dict) or not block.get(rules["blockIdField"]) or not block.get(rules["blockTypeField"]): errors.append(f"node {node_id} has an invalid block")
                         elif block.get(rules["blockTypeField"]) == rules["answerType"] and not isinstance(block.get(rules["answerValueField"]), str): errors.append(f"answer block in {node_id} needs value")
+                        elif block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
+                            buttons = block.get(rules["interactive"]["buttonsField"])
+                            if not isinstance(buttons, list) or not buttons: errors.append(f"buttons block in {node_id} needs buttons")
+                            for button in buttons if isinstance(buttons, list) else []:
+                                target = button.get(target_key) if isinstance(button, dict) else None
+                                if not isinstance(button, dict) or not button.get(rules["interactive"]["buttonTitleField"]) or str(target) not in scenario_ids: errors.append(f"buttons block in {node_id} has an invalid target")
         return errors
+
+    def normalize_draft(self, bot: Any) -> Any:
+        """Apply platform-declared aliases without embedding platform syntax in the loop."""
+        if not isinstance(bot, dict):
+            return bot
+        normalized = json.loads(json.dumps(bot))
+        rules = self.platform.spec["validation"]
+        aliases = self.platform.spec["normalization"]["entryEdges"]
+        for scenario in normalized.get(rules["scenariosField"], []):
+            if not isinstance(scenario, dict):
+                continue
+            for edge in scenario.get(rules["entryEdgesField"], []):
+                if not isinstance(edge, dict):
+                    continue
+                target_field = aliases["targetField"]
+                if not edge.get(target_field):
+                    for alias in aliases["targetAliases"]:
+                        if edge.get(alias):
+                            edge[target_field] = edge[alias]
+                            break
+                if edge.get(aliases["eventAlias"]):
+                    edge.setdefault(aliases["typeField"], aliases["eventType"])
+                    edge.setdefault(aliases["valueField"], edge[aliases["eventAlias"]])
+        return normalized
 
     def contract(self) -> dict[str, Any]:
         return {
@@ -187,10 +222,12 @@ class Agent:
         return {"status": status, "data": data}
 
     def save_draft(self, bot: Any) -> dict[str, Any]:
-        self.draft = bot if isinstance(bot, dict) else None
-        errors = self.validate(bot)
+        self.draft = self.normalize_draft(bot) if isinstance(bot, dict) else None
+        errors = self.validate(self.draft)
         if self.draft:
             (self.c.debug_dir / "last_platform_payload.json").write_text(json.dumps(self.envelope(self.draft), ensure_ascii=False, indent=2), encoding="utf-8")
+        if errors:
+            print(f"DRAFT invalid: {'; '.join(errors)}", flush=True)
         return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
 
     def publish(self) -> dict[str, Any]:
@@ -266,7 +303,8 @@ class Agent:
     def run(self, prompt: str) -> None:
         if not self.c.llm_url or not self.c.llm_key or not self.c.model:
             raise RuntimeError("COTYPE_BASE_URL, COTYPE_API_KEY, and COTYPE_MODEL are required")
-        attached_skills = f"\n\n# Work-style skill\n{self.work_style}\n\n# Platform skill\n{self.platform.instructions}"
+        machine_contract = {key: self.platform.spec[key] for key in ("payload", "validation", "normalization", "contract")}
+        attached_skills = f"\n\n# Work-style skill\n{self.work_style}\n\n# Platform skill\n{self.platform.instructions}\n\n# Machine-readable platform contract\n{json.dumps(machine_contract, ensure_ascii=False)}"
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM + attached_skills}, {"role": "user", "content": prompt}]
         if self.c.history_file and Path(self.c.history_file).is_file():
             history = json.loads(Path(self.c.history_file).read_text(encoding="utf-8"))
