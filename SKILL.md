@@ -14,9 +14,9 @@ Use this skill when creating, editing, validating, publishing, or testing a bot 
 ## Minimal portable rules
 
 - Send imports as `{"data":{"type":"bots","attributes": BOT}}`.
-- `BOT` needs `botName`, `requestTtlInSeconds`, `noMatchStubAnswer`, `needPreprocess`, and nonempty `scenarios`.
+- `BOT` needs `name`, `changesMessage`, `botName`, `requestTtlInSeconds`, `noMatchStubAnswer`, `needPreprocess`, and nonempty `scenarios`.
 - Use a unique `botName` containing only lowercase ASCII letters, digits, and underscores.
-- Every scenario needs a name, entry edges, nodes, unique node ids, and blocks.
+- Use `engineType: "langgraph-engine"`. Every scenario needs a name, an `event/init` entry edge, nodes, unique node ids, and blocks. Answer blocks use `id`, `tags: null`, `type: "answer"`, and `value`.
 - Use `Accept`, `X-Ai-Workspace`, a fresh `request-id`, optional `X-Ai-Account`, and bearer authorization when a token is supplied.
 
 ## Guardrails
