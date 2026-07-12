@@ -59,3 +59,9 @@ Use this validated routing pattern for the more demanding HR Copilot and booking
 - The autonomous verifier now accepts a model-selected, named test plan. It has no fixed case count: the task's observable branches determine coverage, and all named cases must pass before completion.
 - Published HR Copilot `4119`, version `6712`, scenario `1`: five linked scenarios for HR dialogue, response/menu, operator handoff, prompt-injection recovery, and interview slots.
 - Its live verification plan covered greeting/menu, salary FAQ, operator command, injection recovery, and scheduling. An initial UTF-8 transport failure was reported as a failed plan, repaired, and the same five cases then passed.
+
+## 2026-07-12 — MEDSI MCP preflight
+
+- Added generic validation and environment-materialisation for `agent` blocks with external MCP servers; the loop and work-style remain platform/domain neutral.
+- Discovered the live MEDSI MCP schema over SSE and published the profile-first integration bot `4130`, version `6716`. Its engine greeting invoked the real `get_profile` tool and returned the patient name `Аркадий Антонович`.
+- The booking branches are deliberately not marked complete yet: the remaining implementation must preserve the real-MCP-only, explicit-confirmation, and real-`REC-...` invariants.
