@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from mws_agent.mcp_client import MCPClient
+from mws_mcp.runtime import PlatformRuntime
 
 
 VALID_BOT = {
@@ -57,11 +58,48 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("model config" in error for error in result["errors"]))
 
+    def test_accepts_task_selected_model_placeholders(self):
+        block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
+        self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
+
+    def test_rejects_script_without_platform_handler(self):
+        block = {"id": "script", "type": "script", "value": "return 1", "result_variable_name": "result"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("async handler" in error for error in result["errors"]))
+
+    def test_rejects_script_import(self):
+        block = {"id": "script", "type": "script", "value": "import json\nasync def handler(context: Context) -> None:\n    pass", "result_variable_name": "result"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("forbidden import" in error for error in result["errors"]))
+
+    def test_rejects_workflow_llm_without_next_node(self):
+        block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertTrue(result["valid"])
+
     def test_loop_has_no_platform_tool_registry(self):
         source = (Path(__file__).resolve().parents[1] / "mws_agent" / "loop.py").read_text(encoding="utf-8")
         self.assertNotIn("TOOLS =", source)
         self.assertNotIn("def publish(", source)
         self.assertNotIn("api/v3/nocode", source)
+
+    def test_technical_engine_reply_does_not_pass_smoke_test(self):
+        runtime = PlatformRuntime()
+        runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
+        runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Техническая ошибка"}}]}}}})  # type: ignore[method-assign]
+        self.assertFalse(runtime.engine_test("hello")["tested"])
+
+    def test_can_test_configured_existing_version_without_publish_in_this_process(self):
+        runtime = PlatformRuntime()
+        runtime.configure({"existingBotId": "bot", "existingVersionId": "version"})
+        runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}]}}}})  # type: ignore[method-assign]
+        self.assertTrue(runtime.engine_test("hello")["tested"])
 
 
 if __name__ == "__main__":

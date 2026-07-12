@@ -5,6 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,13 @@ class Agent:
         self.work_style = read_skill(config.work_style_skill)
 
     def context(self) -> dict[str, Any]:
-        return {"dryRun": self.c.dry_run, "existingBotId": self.c.existing_bot_id, "existingVersionId": self.c.existing_version_id, "testMessage": self.c.test_message}
+        return {
+            "dryRun": self.c.dry_run,
+            "existingBotId": self.c.existing_bot_id,
+            "existingVersionId": self.c.existing_version_id,
+            "testMessage": self.c.test_message,
+            "runId": uuid.uuid4().hex,
+        }
 
     def validate(self, bot: Any) -> list[str]:
         mcp = MCPClient()

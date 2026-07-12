@@ -34,6 +34,14 @@
 - DKS dry-run produced the required two local scenarios, `extend` from scenario 1 to 2, LLM, script, and answer blocks. Skill validation now rejects incomplete LLM model configuration before publication.
 - Published DKS version `6648` exposed a runtime requirement for `llm.system_message` and `llm.user_message`; those are now in the generic MWS skill contract. A follow-up network generation timed out before its first tool call, so no new version was published and DKS is explicitly not yet accepted as passing.
 
+## 2026-07-12 — live DKS completion and autonomous safeguards
+
+- Published DKS Sentiment bot `4084`, version `6682`, scenario `1`. It uses the task's exact topic, subtopic, and sentiment taxonomies, two linked scenarios, an LLM classifier, and sandbox-safe Python normalization.
+- Independently exercised its live engine with neutral off-topic text, unavailable support, gratitude, and a negative service complaint. Each reply was nonempty JSON with the expected category/sentiment; a technical-error reply can no longer be treated as a passing smoke test.
+- `test_published_bot` can now test a configured bot/version in a new MCP process, rather than relying on a previous publish in the same process.
+- MCP debug records are isolated per run and secrets are redacted from both records and returned engine payloads.
+- Rechecked Joke Bot `3929`, version `6566`: its category choices and follow-up choices are sent through `payload.suggestions.buttons`, while joke text is returned through `payload.items`; both are present in the real engine response.
+
 ## Next checkpoint
 
 Run the dry-run against the provided model credentials, inspect the generated payload against the live platform, then run `hello-world` before adding features.

@@ -33,7 +33,17 @@ class PlatformRuntime:
 
     def configure(self, value: dict[str, Any]) -> dict[str, Any]:
         self.context = {**self.context, **value}
+        self.context.setdefault("runId", uuid.uuid4().hex)
         return {"configured": True, "mode": "update" if self.context.get("existingBotId") else "create", "dryRun": bool(self.context.get("dryRun"))}
+
+    def artifact(self, name: str, value: Any) -> Path:
+        """Keep a per-run debugging record while retaining the convenient latest file."""
+        text = json.dumps(self.redact(value), ensure_ascii=False, indent=2)
+        latest = self.debug_dir / name
+        latest.write_text(text, encoding="utf-8")
+        runs = self.debug_dir / "runs"; runs.mkdir(exist_ok=True)
+        (runs / f"{self.context.get('runId', 'manual')}_{name}").write_text(text, encoding="utf-8")
+        return latest
 
     def headers(self) -> dict[str, str]:
         names = self.platform.spec["headers"]
@@ -91,7 +101,58 @@ class PlatformRuntime:
                         if edge.get(alias): edge[target] = edge[alias]; break
                 if edge.get(aliases["eventAlias"]):
                     edge.setdefault(aliases["typeField"], aliases["eventType"]); edge.setdefault(aliases["valueField"], edge[aliases["eventAlias"]])
+            flow = rules.get("flow", {}); nodes = scenario.get(rules["nodesField"], [])
+            if flow.get("repairSequentialWorkflow") and isinstance(nodes, list):
+                for index, node in enumerate(nodes[:-1]):
+                    if not isinstance(node, dict) or node.get(flow["nextNodeField"]): continue
+                    blocks = node.get(rules["blocksField"], [])
+                    types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
+                    if any(kind in flow.get("requiresNextFor", []) for kind in types):
+                        next_node = nodes[index + 1]
+                        if isinstance(next_node, dict) and next_node.get(rules["nodeIdField"]): node[flow["nextNodeField"]] = next_node[rules["nodeIdField"]]
+            for node in nodes if isinstance(nodes, list) else []:
+                for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) != "llm": continue
+                    model = block.get(rules.get("llmModel", {}).get("field", "model"))
+                    if not isinstance(model, dict): continue
+                    for key, raw in list(model.items()):
+                        if not isinstance(raw, str): continue
+                        for env_name, secret in os.environ.items():
+                            if env_name.upper().endswith(("_URL", "_TOKEN", "_API_KEY", "_MODEL", "_MODEL_NAME")) and secret and raw == secret:
+                                model[key] = "${" + env_name + "}"; break
         return value
+
+    def materialize_model_env(self, bot: dict[str, Any]) -> dict[str, Any]:
+        """Resolve only ${ENV_VAR} inside LLM model configs immediately before upload."""
+        value = json.loads(json.dumps(bot)); rules = self.platform.spec["validation"]
+        for scenario in value.get(rules["scenariosField"], []):
+            for node in scenario.get(rules["nodesField"], []) if isinstance(scenario, dict) else []:
+                for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) != "llm": continue
+                    model = block.get(rules.get("llmModel", {}).get("field", "model"))
+                    if not isinstance(model, dict): continue
+                    for key, raw in list(model.items()):
+                        if isinstance(raw, str):
+                            for env_name, secret in os.environ.items():
+                                if env_name.upper().endswith(("_URL", "_TOKEN", "_API_KEY", "_MODEL", "_MODEL_NAME")) and secret and raw == secret:
+                                    model[key] = "${" + env_name + "}"; raw = model[key]; break
+                        match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", raw) if isinstance(raw, str) else None
+                        if match:
+                            env_name = match.group(1); env_name = rules.get("llmModel", {}).get("envAliases", {}).get(env_name, env_name)
+                            if os.getenv(env_name): model[key] = os.environ[env_name]
+        return value
+
+    def redact(self, value: Any) -> Any:
+        secrets = {os.getenv(name, "") for name in os.environ if name.endswith(("_API_KEY", "_TOKEN"))}
+        def visit(item: Any) -> Any:
+            if isinstance(item, str):
+                for secret in secrets:
+                    if secret and len(secret) > 3: item = item.replace(secret, "********")
+                return item
+            if isinstance(item, list): return [visit(entry) for entry in item]
+            if isinstance(item, dict): return {key: visit(entry) for key, entry in item.items()}
+            return item
+        return visit(value)
 
     def validate(self, bot: Any) -> list[str]:
         if not isinstance(bot, dict): return ["draft must be a JSON object"]
@@ -125,19 +186,30 @@ class PlatformRuntime:
                 node_id = str(node[rules["nodeIdField"]]); blocks = node.get(rules["blocksField"])
                 if not isinstance(node.get(rules["nodeNameField"]), str) or not node[rules["nodeNameField"]].strip(): errors.append(f"node {node_id} needs a name")
                 if not isinstance(blocks, list) or not blocks: errors.append(f"node {node_id} needs blocks"); continue
+                block_types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
+                if any(kind in rules.get("flow", {}).get("requiresNextFor", []) for kind in block_types):
+                    next_id = node.get(rules["flow"]["nextNodeField"])
+                    if next_id is None or str(next_id) not in node_ids: errors.append(f"workflow node {node_id} needs next_node_id to an existing node")
                 for block in blocks:
                     if not isinstance(block, dict) or not block.get(rules["blockIdField"]) or not block.get(rules["blockTypeField"]): errors.append(f"node {node_id} has an invalid block"); continue
                     if block.get(rules["blockTypeField"]) == rules["answerType"] and not isinstance(block.get(rules["answerValueField"]), str): errors.append(f"answer block in {node_id} needs value")
                     for required in rules.get("blockRequirements", {}).get(block.get(rules["blockTypeField"]), []):
                         if block.get(required) is None: errors.append(f"{block.get(rules['blockTypeField'])} block in {node_id} needs {required}")
+                    if block.get(rules["blockTypeField"]) == "script":
+                        script_rule = rules.get("script", {}); pattern = script_rule.get("requiredPattern")
+                        if pattern and (not isinstance(block.get("value"), str) or not re.search(pattern, block["value"])): errors.append(f"script block in {node_id} needs an async handler(context: Context)")
+                        forbidden = script_rule.get("forbiddenPattern")
+                        if forbidden and isinstance(block.get("value"), str) and re.search(forbidden, block["value"]): errors.append(f"script block in {node_id} uses a forbidden import")
                     if block.get(rules["blockTypeField"]) == "llm":
                         model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
                         if not isinstance(model, dict): errors.append(f"llm block in {node_id} needs an object model config")
                         else:
                             for field in model_rule.get("requiredFields", []):
                                 if not model.get(field): errors.append(f"llm model in {node_id} needs {field}")
-                            for field, placeholder in model_rule.get("requiredPlaceholders", {}).items():
-                                if model.get(field) != placeholder: errors.append(f"llm model in {node_id} must use {placeholder} for {field}")
+                            pattern = model_rule.get("placeholderPattern")
+                            if pattern:
+                                for field in model_rule.get("requiredFields", []):
+                                    if not isinstance(model.get(field), str) or not re.fullmatch(pattern, model[field]): errors.append(f"llm model in {node_id} must use an environment placeholder for {field}")
                     if block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
                         buttons = block.get(rules["interactive"]["buttonsField"])
                         for button in buttons if isinstance(buttons, list) else []:
@@ -155,27 +227,37 @@ class PlatformRuntime:
 
     def save_draft(self, bot: Any) -> dict[str, Any]:
         self.draft = self.normalize(bot); errors = self.validate(self.draft)
-        if self.draft: (self.debug_dir / "last_platform_payload.json").write_text(json.dumps(self.envelope(self.draft), ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.draft: self.artifact("last_platform_payload.json", self.envelope(self.draft))
         return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
 
     def engine_test(self, message: str | None = None) -> dict[str, Any]:
         bot_id, version_id, _ = self.target(self.last_response)
+        if not bot_id:
+            bot_id = self.context.get("existingBotId")
+        if bot_id and not version_id:
+            requested_version = self.context.get("existingVersionId")
+            if requested_version:
+                version_id = requested_version
+            else:
+                status, bot = self.request("GET", self.url("bot", botId=bot_id))
+                version_id = self.attributes(bot).get("currentVersionId") if 200 <= status < 300 else None
         if not bot_id or not version_id: return {"tested": False, "error": "no successful platform response"}
         body = {"data": {"type": "engine", "attributes": {"sessionId": f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
         status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         if status >= 500: time.sleep(1); status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         try: reply = "\n".join(item.get("bubble", {}).get("value", "") for item in data["data"]["attributes"]["payload"].get("items", []))
         except (KeyError, TypeError): reply = ""
-        return {"tested": 200 <= status < 300, "status": status, "reply": reply, "response": data}
+        technical = not reply or "техническая ошибка" in reply.lower() or "technical error" in reply.lower()
+        return {"tested": 200 <= status < 300 and not technical, "status": status, "reply": reply, "technical": technical, "response": self.redact(data)}
 
     def publish(self) -> dict[str, Any]:
         if not self.draft: return {"terminal": False, "published": False, "error": "no draft saved"}
         errors = self.validate(self.draft)
         if errors: return {"terminal": False, "published": False, "errors": errors}
-        payload = self.envelope(self.draft); payload_path = self.debug_dir / "last_platform_payload.json"; payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        debug_payload = self.envelope(self.draft); payload = self.envelope(self.materialize_model_env(self.draft)); payload_path = self.artifact("last_platform_payload.json", debug_payload)
         if self.context.get("dryRun"): return {"terminal": True, "published": False, "dryRun": True, "payload": str(payload_path)}
         existing = self.context.get("existingBotId"); status, data = self.request("POST", self.url("importVersion", botId=existing) if existing else self.url("import"), payload)
-        self.last_response = data; (self.debug_dir / "last_platform_response.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.last_response = data; self.artifact("last_platform_response.json", data)
         if not 200 <= status < 300: return {"terminal": False, "published": False, "status": status, "response": data}
         bot_id, version_id, scenario_id = self.target(data); active = existing or bot_id
         if existing and version_id: self.request("POST", self.url("makeCurrent", botId=existing, versionId=version_id))
