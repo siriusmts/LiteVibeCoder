@@ -173,7 +173,13 @@ class Agent:
         return errors
 
     def contract(self) -> dict[str, Any]:
-        return {"mode": "update" if self.c.existing_bot_id else "create", "dryRun": self.c.dry_run, **self.platform.spec["contract"]}
+        return {
+            "mode": "update" if self.c.existing_bot_id else "create",
+            "dryRun": self.c.dry_run,
+            "contract": self.platform.spec["contract"],
+            "payload": self.platform.spec["payload"],
+            "validation": self.platform.spec["validation"],
+        }
 
     def inspect(self) -> dict[str, Any]:
         if not self.c.existing_bot_id: return {"note": "No existing bot selected; create a new one."}
@@ -277,6 +283,7 @@ class Agent:
                 return
             for call in calls:
                 fn = call.get("function") or {}
+                print(f"TOOL: {fn.get('name', 'unknown')}", flush=True)
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError: args = {}
                 result = self.call_tool(str(fn.get("name", "")), args)

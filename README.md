@@ -15,6 +15,8 @@ python create_mts_agent.py --env-file ..\..\work\starter_pack_2\starter_pack\.en
 
 The first command never changes the platform. For the desktop GUI, set `MTS_AGENT_DIR` to this folder; its adapter already supplies provider settings and passes `--dry-run` when upload is disabled.
 
+The startup log should show `TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
+
 ## Tests
 
 ```powershell
