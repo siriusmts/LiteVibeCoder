@@ -2,6 +2,8 @@
 
 This is a clean, small tool-calling loop compatible with the supplied MWS desktop adapter. It deliberately keeps credentials out of the repository and has no third-party runtime dependency.
 
+`SKILL.md` is the portable, concise platform knowledge file; it is also required by the supplied desktop adapter when it materializes an agent snapshot.
+
 The LLM chooses between platform inspection, drafting, structural validation, publication, and a post-publication engine test. Drafts are saved to `debug/last_platform_payload.json`; responses go to `debug/last_platform_response.json`.
 
 ## Run
