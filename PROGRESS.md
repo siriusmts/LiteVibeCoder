@@ -44,4 +44,12 @@
 
 ## Next checkpoint
 
-Run the dry-run against the provided model credentials, inspect the generated payload against the live platform, then run `hello-world` before adding features.
+## 2026-07-12 — higher-complexity Support Bot
+
+- Extended the detachable MWS skill with validated `single_if` routes and documented stateful routing plus `go_operator` handoff. The generic loop remains unchanged.
+- Published Support Bot `4110`, version `6698`, scenario `1`: six scenarios, `init`/`no_match` routing, LLM catalog dialogue, local interactive menu, `extend` transitions, and a terminal operator handoff.
+- Live engine checks passed for greeting/menu, direct `Тарифы` (returns 990 and 490), a free tariff question, and an operator request (returns the handoff message and a `go_operator` command).
+
+## Next checkpoint
+
+Use this validated routing pattern for the more demanding HR Copilot and booking tasks.

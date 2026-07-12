@@ -83,6 +83,13 @@ class McpIntegrationTests(unittest.TestCase):
         result = self.client.call("save_draft", {"bot": draft})
         self.assertTrue(result["valid"])
 
+    def test_rejects_conditional_route_without_existing_target(self):
+        block = {"id": "if", "type": "single_if", "title": "Route", "expression": "flag == True", "code_type": "python", "target_node_id": "missing"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("single_if" in error for error in result["errors"]))
+
     def test_loop_has_no_platform_tool_registry(self):
         source = (Path(__file__).resolve().parents[1] / "mws_agent" / "loop.py").read_text(encoding="utf-8")
         self.assertNotIn("TOOLS =", source)

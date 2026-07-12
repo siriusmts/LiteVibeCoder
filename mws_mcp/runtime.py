@@ -215,6 +215,9 @@ class PlatformRuntime:
                         for button in buttons if isinstance(buttons, list) else []:
                             target = button.get(target_key) if isinstance(button, dict) else None
                             if not isinstance(button, dict) or not button.get(rules["interactive"]["buttonTitleField"]) or str(target) not in node_ids: errors.append(f"buttons block in {node_id} has an invalid target")
+                    if block.get(rules["blockTypeField"]) == "single_if":
+                        target = block.get(target_key)
+                        if str(target) not in node_ids: errors.append(f"single_if block in {node_id} has an invalid target")
         return errors
 
     def contract(self) -> dict[str, Any]:
