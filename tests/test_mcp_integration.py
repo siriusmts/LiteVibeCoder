@@ -112,10 +112,12 @@ class McpIntegrationTests(unittest.TestCase):
         runtime = PlatformRuntime()
         runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
         runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello catalog"}}], "suggestions": {"buttons": [{"title": "More"}]}}}}})  # type: ignore[method-assign]
-        passed = runtime.verify([{"message": "hello", "expectContains": ["catalog"], "expectButtons": ["More"]}])
-        failed = runtime.verify([{"message": "hello", "expectCommand": "go_operator"}])
+        passed = runtime.verify([{"name": "catalog", "message": "hello", "expectContains": ["catalog"], "expectButtons": ["More"]}])
+        failed = runtime.verify([{"name": "handoff", "message": "hello", "expectCommand": "go_operator"}])
+        invalid = runtime.verify([{"message": "hello"}])
         self.assertTrue(passed["passed"])
         self.assertFalse(failed["passed"])
+        self.assertFalse(invalid["passed"])
 
 
 if __name__ == "__main__":

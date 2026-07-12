@@ -271,7 +271,10 @@ class PlatformRuntime:
     def verify(self, tests: Any) -> dict[str, Any]:
         if not isinstance(tests, list) or not tests:
             return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
-        results = [self.engine_test(case.get("message"), case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand")) for case in tests if isinstance(case, dict)]
+        invalid = [index for index, case in enumerate(tests) if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip() or not isinstance(case.get("message"), str)]
+        if invalid:
+            return {"terminal": False, "passed": False, "errors": [f"each test needs non-empty name and message; invalid indices: {invalid}"]}
+        results = [{"name": case["name"], **self.engine_test(case["message"], case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand"))} for case in tests]
         passed = len(results) == len(tests) and all(result.get("passed") for result in results)
         return {"terminal": passed, "passed": passed, "results": results}
 

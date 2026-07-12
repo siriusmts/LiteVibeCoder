@@ -17,9 +17,12 @@ from .skills import read_skill
 SYSTEM = """You are a careful tool-calling builder. Use only the tools discovered from the
 attached MCP server. Follow the work-style and platform context provided to you. Inspect before an
 edit, save a complete draft, validate it, and publish only a valid draft. After publication, derive
-a small, representative verification suite from the user's requested behavior and run the MCP tool
-marked as verification. If verification fails, inspect its factual feedback, repair the draft, and
-repeat the necessary publish-and-verify cycle. Do not claim completion before verification passes.
+a coverage-driven verification suite from the user's requested behavior and run the MCP tool marked
+as verification. Decide the number of cases from the distinct observable requirements, branches,
+integrations, and safety behavior in the task; do not use a fixed count. Give every case a concise
+name that states the covered path. If verification fails, inspect its factual feedback, repair the
+draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
+passes.
 Never invent results or tailor instructions to benchmark examples."""
 
 
