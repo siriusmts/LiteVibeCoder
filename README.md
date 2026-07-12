@@ -17,6 +17,10 @@ The first command never changes the platform. For the desktop GUI, set `MTS_AGEN
 
 The startup log should show `TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
 
+## Detachable MCP tools
+
+`mws_mcp/` is a dependency-free stdio MCP server. The loop discovers its tool schemas using `initialize` and `tools/list`; it contains no MWS route or tool registry. Use `MWS_MCP_COMMAND` to replace it with another MCP server. In GUI mode, keep `MTS_AGENT_DIR` pointed at this source directory so the MCP child process can load the selected package.
+
 ## Tests
 
 ```powershell
