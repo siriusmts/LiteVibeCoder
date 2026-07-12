@@ -22,6 +22,7 @@
 - The runtime accepts `MWS_AGENT_PLATFORM_SKILL` and `MWS_AGENT_WORK_STYLE_SKILL`; `MTS_AGENT_DIR` keeps the skills available when the supplied GUI materializes its runtime copy.
 - Frontend links now require and include `activeScenarioId`. Existing live links are `/projects/3927?botVersionId=6481&activeScenarioId=15142` and `/projects/3929?botVersionId=6483&activeScenarioId=15146`.
 - A GUI-mode dry-run revealed that a text-only skill was insufficient for model construction. `platform_contract` now returns the loaded payload and validation sections from the selected skill pack; tool names are logged so stalled loops remain diagnosable without exposing secrets.
+- Update mode was exercised against existing bot `3927` in dry-run. The sequence was `inspect_existing_bot → save_draft → platform_contract → save_draft → publish_draft`; the updated payload validated and no platform write was made.
 
 ## Next checkpoint
 
