@@ -111,7 +111,7 @@ class McpIntegrationTests(unittest.TestCase):
     def test_verification_suite_requires_all_assertions(self):
         runtime = PlatformRuntime()
         runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
-        runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello catalog"}}], "suggestions": {"buttons": [{"title": "More"}]}}}}})  # type: ignore[method-assign]
+        runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [None, {"bubble": {"value": "Hello catalog"}}], "suggestions": {"buttons": [{"title": "More"}]}}}}})  # type: ignore[method-assign]
         passed = runtime.verify([{"name": "catalog", "message": "hello", "expectContains": ["catalog"], "expectButtons": ["More"]}])
         failed = runtime.verify([{"name": "handoff", "message": "hello", "expectCommand": "go_operator"}])
         invalid = runtime.verify([{"message": "hello"}])

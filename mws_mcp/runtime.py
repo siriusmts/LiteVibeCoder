@@ -252,9 +252,10 @@ class PlatformRuntime:
         buttons: list[str] = []; commands: list[str] = []
         try:
             payload = data["data"]["attributes"]["payload"]
-            reply = "\n".join(item.get("bubble", {}).get("value", "") for item in payload.get("items", []))
+            items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+            reply = "\n".join((item.get("bubble") or {}).get("value", "") for item in items)
             buttons = [button.get("title", "") for button in payload.get("suggestions", {}).get("buttons", [])]
-            commands = [item.get("command", {}).get("value", "") for item in payload.get("items", []) if isinstance(item.get("command"), dict)]
+            commands = [item["command"].get("value", "") for item in items if isinstance(item.get("command"), dict)]
         except (KeyError, TypeError): reply = ""
         else:
             expected_text = expect_contains if isinstance(expect_contains, list) else []
