@@ -196,4 +196,9 @@ class Agent:
                 except json.JSONDecodeError: args = {}
                 result = self.call_tool(str(fn.get("name", "")), args)
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
+                # A dry run has no published target to test.  Its validated payload is
+                # the terminal artefact, so do not spend more model turns seeking one.
+                if fn.get("name") == "publish_draft" and result.get("dryRun"):
+                    print("Dry-run completed: validated payload is ready for review.")
+                    return
         raise RuntimeError(f"agent reached max turns ({self.c.max_turns}) before completion")

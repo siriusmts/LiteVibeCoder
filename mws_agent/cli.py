@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     agent = Agent(config)
     if args.validate_payload:
         payload = json.loads(Path(args.validate_payload).read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload = ((payload.get("data") or {}).get("attributes")) or payload
         errors = agent.validate(payload)
         print(json.dumps({"valid": not errors, "errors": errors}, ensure_ascii=False))
         return 0 if not errors else 2
