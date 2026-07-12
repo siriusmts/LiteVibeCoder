@@ -20,7 +20,7 @@ TOOLS = [
 
 
 def result(value: Any) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
+    return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=True)}]}
 
 
 def call(name: str, args: dict[str, Any]) -> Any:
@@ -44,9 +44,9 @@ def main() -> int:
             elif method == "tools/call": response = result(call(str(params.get("name")), params.get("arguments") or {}))
             elif method == "vibe/configure": response = RUNTIME.configure(params)
             else: raise ValueError(f"Unsupported method: {method}")
-            if "id" in request: print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": response}, ensure_ascii=False), flush=True)
+            if "id" in request: print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": response}, ensure_ascii=True), flush=True)
         except Exception as error:
-            if "id" in locals().get("request", {}): print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32000, "message": str(error)}}, ensure_ascii=False), flush=True)
+            if "id" in locals().get("request", {}): print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32000, "message": str(error)}}, ensure_ascii=True), flush=True)
     return 0
 
 

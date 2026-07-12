@@ -28,6 +28,12 @@
 - Skill-declared normalization now maps alternate entry-edge aliases before validation. This produced and published Hello World version `6579`, scenario `15351`; two independent inputs both returned exactly `Hello World!`.
 - Interactive joke-bot version `6566`, scenario `15321`, is published. In one UTF-8 session it returned the category menu for `привет`, an IT joke plus `Ещё`/category-change buttons for `IT`, and another valid joke for text `Ещё`.
 
+## 2026-07-12 — detachable MCP and DKS Sentiment
+
+- MWS operations are now served by the standalone stdio MCP package `mws_mcp/`; `loop.py` discovers its tool schemas with `tools/list` and contains no MWS route or tool registry. MCP tests cover discovery, validation, normalization, Unicode safety, and absence of embedded platform tools.
+- DKS dry-run produced the required two local scenarios, `extend` from scenario 1 to 2, LLM, script, and answer blocks. Skill validation now rejects incomplete LLM model configuration before publication.
+- Published DKS version `6648` exposed a runtime requirement for `llm.system_message` and `llm.user_message`; those are now in the generic MWS skill contract. A follow-up network generation timed out before its first tool call, so no new version was published and DKS is explicitly not yet accepted as passing.
+
 ## Next checkpoint
 
 Run the dry-run against the provided model credentials, inspect the generated payload against the live platform, then run `hello-world` before adding features.

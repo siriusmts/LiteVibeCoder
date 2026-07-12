@@ -15,3 +15,11 @@ Use the fields, routes, envelope, and validation rules in `platform.json`. They 
 ## Interactive flows
 
 For a menu or branching dialogue, use a `buttons` block with `buttons: [{"title": "…", "target_node_id": "…"}]`, followed by `wait_for_user`. A target must name a node in the same scenario. A node can answer, display another menu, or route to a subsequent node. This is a general interaction pattern; choose the actual menu items and content from the user's request.
+
+## Multiple scenarios
+
+When a request needs multiple scenarios, give each scenario a distinct local integer `id`. Link them through an `extend` block using `scenario_id` equal to the target scenario's local id. The source node still needs a normal node id and block list. Do not use IDs from an unrelated, already-published bot.
+
+## LLM and script blocks
+
+An `llm` block needs `system_message`, `user_message`, `result_variable_name`, and `model`. Put the detailed classifier instruction in `system_message`, pass the incoming text through `user_message`, and keep its output in the named result variable. The model must contain platform placeholders for URL, token, and model name. A `script` block needs executable `value` and `result_variable_name`; it should consume named variables rather than relying on hidden state. An `answer` that displays a computed result should refer to its result variable explicitly.

@@ -50,10 +50,10 @@ class PlatformRuntime:
         req = urllib.request.Request(url, data=data, headers=self.headers(), method=method)
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
-                text = response.read().decode("utf-8", "replace")
+                text = response.read().decode("utf-8", errors="replace")
                 return response.status, json.loads(text) if text else {}
         except urllib.error.HTTPError as error:
-            text = error.read().decode("utf-8", "replace")
+            text = error.read().decode("utf-8", errors="replace")
             try: return error.code, json.loads(text)
             except json.JSONDecodeError: return error.code, {"error": text}
 
@@ -75,7 +75,12 @@ class PlatformRuntime:
 
     def normalize(self, bot: Any) -> Any:
         if not isinstance(bot, dict): return bot
-        value = json.loads(json.dumps(bot)); rules = self.platform.spec["validation"]; aliases = self.platform.spec["normalization"]["entryEdges"]
+        def unicode_safe(item: Any) -> Any:
+            if isinstance(item, str): return item.encode("utf-8", "replace").decode("utf-8")
+            if isinstance(item, list): return [unicode_safe(value) for value in item]
+            if isinstance(item, dict): return {str(key): unicode_safe(value) for key, value in item.items()}
+            return item
+        value = unicode_safe(bot); rules = self.platform.spec["validation"]; aliases = self.platform.spec["normalization"]["entryEdges"]
         for scenario in value.get(rules["scenariosField"], []):
             if not isinstance(scenario, dict): continue
             for edge in scenario.get(rules["entryEdgesField"], []):
@@ -123,6 +128,16 @@ class PlatformRuntime:
                 for block in blocks:
                     if not isinstance(block, dict) or not block.get(rules["blockIdField"]) or not block.get(rules["blockTypeField"]): errors.append(f"node {node_id} has an invalid block"); continue
                     if block.get(rules["blockTypeField"]) == rules["answerType"] and not isinstance(block.get(rules["answerValueField"]), str): errors.append(f"answer block in {node_id} needs value")
+                    for required in rules.get("blockRequirements", {}).get(block.get(rules["blockTypeField"]), []):
+                        if block.get(required) is None: errors.append(f"{block.get(rules['blockTypeField'])} block in {node_id} needs {required}")
+                    if block.get(rules["blockTypeField"]) == "llm":
+                        model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
+                        if not isinstance(model, dict): errors.append(f"llm block in {node_id} needs an object model config")
+                        else:
+                            for field in model_rule.get("requiredFields", []):
+                                if not model.get(field): errors.append(f"llm model in {node_id} needs {field}")
+                            for field, placeholder in model_rule.get("requiredPlaceholders", {}).items():
+                                if model.get(field) != placeholder: errors.append(f"llm model in {node_id} must use {placeholder} for {field}")
                     if block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
                         buttons = block.get(rules["interactive"]["buttonsField"])
                         for button in buttons if isinstance(buttons, list) else []:

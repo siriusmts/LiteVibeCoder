@@ -39,6 +39,24 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("unknown node" in error for error in result["errors"]))
 
+    def test_sanitizes_invalid_unicode_from_model(self):
+        draft = {**VALID_BOT, "changesMessage": "draft \udc98"}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertTrue(result["valid"])
+
+    def test_rejects_incomplete_llm_block(self):
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [{"id": "llm", "type": "llm", "value": "missing required fields"}]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("llm block" in error for error in result["errors"]))
+
+    def test_rejects_nonportable_llm_model_config(self):
+        block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": "gpt-4"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("model config" in error for error in result["errors"]))
+
     def test_loop_has_no_platform_tool_registry(self):
         source = (Path(__file__).resolve().parents[1] / "mws_agent" / "loop.py").read_text(encoding="utf-8")
         self.assertNotIn("TOOLS =", source)

@@ -36,12 +36,12 @@ class MCPClient:
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         if not self.process or not self.process.stdin: raise RuntimeError("MCP server is not running")
-        self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}, ensure_ascii=False) + "\n"); self.process.stdin.flush()
+        self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method, "params": params,}, ensure_ascii=True) + "\n"); self.process.stdin.flush()
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self.process or not self.process.stdin or not self.process.stdout: raise RuntimeError("MCP server is not running")
         request_id = self.next_id; self.next_id += 1
-        self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}, ensure_ascii=False) + "\n"); self.process.stdin.flush()
+        self.process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}, ensure_ascii=True) + "\n"); self.process.stdin.flush()
         raw = self.process.stdout.readline()
         if not raw:
             raise RuntimeError("MCP server exited before responding")
