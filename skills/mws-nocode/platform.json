@@ -1,0 +1,27 @@
+{
+  "payload": {"dataKey": "data", "typeKey": "type", "typeValue": "bots", "attributesKey": "attributes"},
+  "headers": {"accept": "Accept", "contentType": "Content-Type", "workspace": "X-Ai-Workspace", "account": "X-Ai-Account", "requestId": "request-id"},
+  "routes": {
+    "bot": "/api/v3/nocode/bots/{botId}/",
+    "import": "/api/v3/nocode/bots/import/",
+    "importVersion": "/api/v3/nocode/bots/{botId}/import-version/",
+    "makeCurrent": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/make-current/",
+    "publish": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/publish/",
+    "engine": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/engine/"
+  },
+  "frontend": {"path": "/projects/{botId}?botVersionId={versionId}&activeScenarioId={scenarioId}"},
+  "response": {"dataKey": "data", "attributesKey": "attributes", "botIdFields": ["botId", "id"], "versionIdFields": ["id", "currentVersionId"], "scenariosField": "scenarios", "scenarioIdField": "id", "replyPath": ["data", "attributes", "payload", "items"]},
+  "validation": {
+    "stringFields": {"name": 1, "changesMessage": 1, "noMatchStubAnswer": 4},
+    "integerFields": ["requestTtlInSeconds"],
+    "exactFields": {"engineType": "langgraph-engine"},
+    "patternFields": {"botName": "[a-z0-9_]{3,64}"},
+    "enumFields": {"needPreprocess": ["disabled", "required", "optional"]},
+    "scenariosField": "scenarios", "scenarioNameField": "name", "entryEdgesField": "entryEdges", "nodesField": "nodes", "nodeIdField": "id", "nodeNameField": "name", "blocksField": "blocks", "entryEvent": {"type": "event", "value": "init"}, "blockIdField": "id", "blockTypeField": "type", "answerType": "answer", "answerValueField": "value"
+  },
+  "contract": {
+    "draft": "Supply a bot attributes object that validates against platform.json.",
+    "graph": "Each scenario has a name, an event/init entry edge, nodes with unique ids and names, and nonempty blocks. Answer blocks have id, tags:null, type:answer, and value:text.",
+    "required": ["name", "changesMessage", "botName", "engineType", "requestTtlInSeconds", "noMatchStubAnswer", "needPreprocess", "scenarios"]
+  }
+}

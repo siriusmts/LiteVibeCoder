@@ -8,7 +8,8 @@ from mws_agent.loop import Agent, Config
 
 class ValidationTests(unittest.TestCase):
     def agent(self):
-        return Agent(Config("http://example", "http://example", "", "default", "default", "", "", "", True, None, None, 3, "hello", __import__("pathlib").Path("debug"), None))
+        root = Path(__file__).resolve().parents[1]
+        return Agent(Config("http://example", "http://example", "", "default", "default", "", "", "", True, None, None, 3, "hello", Path("debug"), None, root / "skills" / "mws-nocode", root / "skills" / "quality-loop" / "SKILL.md"))
 
     def test_rejects_incomplete_bot(self):
         self.assertTrue(self.agent().validate({"botName": "Bad Name"}))
@@ -27,7 +28,13 @@ class ValidationTests(unittest.TestCase):
 
     def test_extracts_visible_engine_reply(self):
         response = {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}, {"bubble": {"value": "World"}}]}}}}
-        self.assertEqual(Agent.reply_text(response), "Hello\nWorld")
+        self.assertEqual(self.agent().reply_text(response), "Hello\nWorld")
+
+    def test_builds_frontend_link_with_active_scenario(self):
+        self.assertEqual(self.agent().frontend_link(3325, 5991, 14083), "http://example/projects/3325?botVersionId=5991&activeScenarioId=14083")
+
+    def test_loads_platform_route_from_skill_pack(self):
+        self.assertEqual(self.agent().platform_url("publish", botId=1, versionId=2), "http://example/api/v3/nocode/bots/1/bot-versions/2/publish/")
 
 
 if __name__ == "__main__":

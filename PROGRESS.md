@@ -16,6 +16,12 @@
 - A successful import of bot `3927`, version `6481` established that an imported version must also be published before its engine can execute. After `publish`, an independent `Any message` smoke test returned HTTP 200 and `Hello World`.
 - The next simple scenario created bot `3929`, version `6483`. Its post-publish smoke test and three independent retries returned HTTP 200 with a short safe joke. Engine tests now retry one transient 5xx and print only the visible bot reply.
 
+## 2026-07-12 — modular skill correction
+
+- Moved the platform contract out of the core loop: `skills/quality-loop` is platform-independent, while `skills/mws-nocode` contains the MWS instructions and `platform.json` with routes, headers, envelope, validation, response shape, and frontend-link format.
+- The runtime accepts `MWS_AGENT_PLATFORM_SKILL` and `MWS_AGENT_WORK_STYLE_SKILL`; `MTS_AGENT_DIR` keeps the skills available when the supplied GUI materializes its runtime copy.
+- Frontend links now require and include `activeScenarioId`. Existing live links are `/projects/3927?botVersionId=6481&activeScenarioId=15142` and `/projects/3929?botVersionId=6483&activeScenarioId=15146`.
+
 ## Next checkpoint
 
 Run the dry-run against the provided model credentials, inspect the generated payload against the live platform, then run `hello-world` before adding features.
