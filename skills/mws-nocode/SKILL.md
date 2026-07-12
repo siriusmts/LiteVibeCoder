@@ -26,6 +26,8 @@ An `llm` block needs `system_message`, `user_message`, `result_variable_name`, a
 
 An LLM or script node that is part of a workflow must set `next_node_id` to the next existing node. Use an explicit node containing `extend` when the workflow crosses into another scenario; link the preceding node to it through `next_node_id`. A terminal answer node may use `next_node_id: null`.
 
+For a task that needs a real external MCP data source, use an `agent` block rather than an HTTP wrapper around an `/mcp` endpoint. It needs the same portable model configuration as `llm`, plus `tools: {"mcp_servers": [{"url": "https://.../mcp"}]}`. Copy the documented server URL and tool semantics exactly into the task's agent prompt; do not invent source data or credentials. Route its named result to an answer or a guarded next step.
+
 ## Stateful routing and handoff
 
 Use a short sandboxed `script` to derive named session state from the current message, then use `single_if` with `title`, `expression`, `code_type`, and a same-scenario `target_node_id` for a guarded route. Its target is validated by this skill. Use `go_operator` only after a user-facing handoff message; it is terminal. Put global `init` and `no_match` edges on the main scenario and send both to a router/processing node, not to a greeting-only node.

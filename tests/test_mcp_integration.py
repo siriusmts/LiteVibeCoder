@@ -63,6 +63,11 @@ class McpIntegrationTests(unittest.TestCase):
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
         self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
 
+    def test_validates_agent_mcp_configuration(self):
+        block = {"id": "agent", "type": "agent", "system_message": "Use MCP", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}, "tools": {"mcp_servers": [{"url": "https://example.test/mcp"}]}}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]}]}]}
+        self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
+
     def test_rejects_script_without_platform_handler(self):
         block = {"id": "script", "type": "script", "value": "return 1", "result_variable_name": "result"}
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}

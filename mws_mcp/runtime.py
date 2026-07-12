@@ -112,7 +112,7 @@ class PlatformRuntime:
                         if isinstance(next_node, dict) and next_node.get(rules["nodeIdField"]): node[flow["nextNodeField"]] = next_node[rules["nodeIdField"]]
             for node in nodes if isinstance(nodes, list) else []:
                 for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
-                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) != "llm": continue
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
                     model = block.get(rules.get("llmModel", {}).get("field", "model"))
                     if not isinstance(model, dict): continue
                     for key, raw in list(model.items()):
@@ -128,7 +128,7 @@ class PlatformRuntime:
         for scenario in value.get(rules["scenariosField"], []):
             for node in scenario.get(rules["nodesField"], []) if isinstance(scenario, dict) else []:
                 for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
-                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) != "llm": continue
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
                     model = block.get(rules.get("llmModel", {}).get("field", "model"))
                     if not isinstance(model, dict): continue
                     for key, raw in list(model.items()):
@@ -200,16 +200,20 @@ class PlatformRuntime:
                         if pattern and (not isinstance(block.get("value"), str) or not re.search(pattern, block["value"])): errors.append(f"script block in {node_id} needs an async handler(context: Context)")
                         forbidden = script_rule.get("forbiddenPattern")
                         if forbidden and isinstance(block.get("value"), str) and re.search(forbidden, block["value"]): errors.append(f"script block in {node_id} uses a forbidden import")
-                    if block.get(rules["blockTypeField"]) == "llm":
+                    if block.get(rules["blockTypeField"]) in {"llm", "agent"}:
+                        kind = block[rules["blockTypeField"]]
                         model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
-                        if not isinstance(model, dict): errors.append(f"llm block in {node_id} needs an object model config")
+                        if not isinstance(model, dict): errors.append(f"{kind} block in {node_id} needs an object model config")
                         else:
                             for field in model_rule.get("requiredFields", []):
-                                if not model.get(field): errors.append(f"llm model in {node_id} needs {field}")
+                                if not model.get(field): errors.append(f"{kind} model in {node_id} needs {field}")
                             pattern = model_rule.get("placeholderPattern")
                             if pattern:
                                 for field in model_rule.get("requiredFields", []):
-                                    if not isinstance(model.get(field), str) or not re.fullmatch(pattern, model[field]): errors.append(f"llm model in {node_id} must use an environment placeholder for {field}")
+                                    if not isinstance(model.get(field), str) or not re.fullmatch(pattern, model[field]): errors.append(f"{kind} model in {node_id} must use an environment placeholder for {field}")
+                        if kind == "agent":
+                            servers = (block.get("tools") or {}).get("mcp_servers") if isinstance(block.get("tools"), dict) else None
+                            if not isinstance(servers, list) or not all(isinstance(server, dict) and isinstance(server.get("url"), str) and server["url"].startswith(("http://", "https://")) for server in servers): errors.append(f"agent block in {node_id} needs tools.mcp_servers with HTTP URLs")
                     if block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
                         buttons = block.get(rules["interactive"]["buttonsField"])
                         for button in buttons if isinstance(buttons, list) else []:
