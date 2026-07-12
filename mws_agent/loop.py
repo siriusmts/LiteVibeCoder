@@ -171,8 +171,16 @@ class Agent:
         if not 200 <= status < 300: return {"published": False, "status": status, "response": data}
         attrs = (data.get("data") or {}).get("attributes") or {} if isinstance(data, dict) else {}
         bot_id, version_id = attrs.get("botId") or attrs.get("id"), attrs.get("id") or attrs.get("currentVersionId")
+        active_bot_id = self.c.existing_bot_id or bot_id
         if self.c.existing_bot_id and version_id:
-            self.request("POST", f"{self.c.base_url}/api/v3/nocode/bots/{self.c.existing_bot_id}/bot-versions/{version_id}/make-current/")
+            current_status, _ = self.request("POST", f"{self.c.base_url}/api/v3/nocode/bots/{self.c.existing_bot_id}/bot-versions/{version_id}/make-current/")
+            print(f"MAKE CURRENT status: {current_status}", flush=True)
+        if not active_bot_id or not version_id:
+            return {"published": False, "status": status, "error": "platform did not return botId/versionId"}
+        publish_status, publish_response = self.request("POST", f"{self.c.base_url}/api/v3/nocode/bots/{active_bot_id}/bot-versions/{version_id}/publish/")
+        print(f"PUBLISH status: {publish_status}", flush=True)
+        if not 200 <= publish_status < 300:
+            return {"published": False, "status": publish_status, "response": publish_response}
         if bot_id and version_id:
             print(f"Frontend URL: {self.c.frontend_url}/projects/{bot_id}?botVersionId={version_id}", flush=True)
         return {"published": True, "status": status, "botId": bot_id, "versionId": version_id}
@@ -218,10 +226,16 @@ class Agent:
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except json.JSONDecodeError: args = {}
                 result = self.call_tool(str(fn.get("name", "")), args)
+                if fn.get("name") == "publish_draft" and result.get("published"):
+                    test_result = self.test(self.c.test_message)
+                    result["test"] = test_result
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
                 # A dry run has no published target to test.  Its validated payload is
                 # the terminal artefact, so do not spend more model turns seeking one.
                 if fn.get("name") == "publish_draft" and result.get("dryRun"):
                     print("Dry-run completed: validated payload is ready for review.")
+                    return
+                if fn.get("name") == "publish_draft" and result.get("test", {}).get("tested"):
+                    print("Published bot passed the engine smoke test.", flush=True)
                     return
         raise RuntimeError(f"agent reached max turns ({self.c.max_turns}) before completion")
