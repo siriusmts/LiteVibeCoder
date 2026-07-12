@@ -1,0 +1,27 @@
+# Minimal MWS vibecoding agent
+
+This is a clean, small tool-calling loop compatible with the supplied MWS desktop adapter. It deliberately keeps credentials out of the repository and has no third-party runtime dependency.
+
+The LLM chooses between platform inspection, drafting, structural validation, publication, and a post-publication engine test. Drafts are saved to `debug/last_platform_payload.json`; responses go to `debug/last_platform_response.json`.
+
+## Run
+
+```powershell
+python create_mts_agent.py --env-file ..\..\work\starter_pack_2\starter_pack\.env --dry-run "Create a helpful assistant for our product"
+python create_mts_agent.py --env-file ..\..\work\starter_pack_2\starter_pack\.env "Create a helpful assistant for our product"
+```
+
+The first command never changes the platform. For the desktop GUI, set `MTS_AGENT_DIR` to this folder; its adapter already supplies provider settings and passes `--dry-run` when upload is disabled.
+
+## Tests
+
+```powershell
+$env:PYTHONPATH = (Get-Location)
+python -m unittest discover -s tests -v
+```
+
+## Safety
+
+- `.env`, `debug/`, token files, and generated payloads are ignored.
+- Upload requires omitting `--dry-run`; validation happens before every write.
+- The implementation contains general platform rules only—no benchmark-task instructions or task-specific templates.
