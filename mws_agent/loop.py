@@ -192,8 +192,25 @@ class Agent:
         if not bot_id or not version_id: return {"tested": False, "error": "platform did not return bot/version id"}
         body = {"data": {"type": "engine", "attributes": {"sessionId": f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.c.test_message}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
         status, data = self.request("POST", f"{self.c.base_url}/api/v3/nocode/bots/{bot_id}/bot-versions/{version_id}/engine/", body)
+        if status >= 500:
+            print(f"TEST status: {status}; retrying once after publication.", flush=True)
+            time.sleep(1)
+            status, data = self.request("POST", f"{self.c.base_url}/api/v3/nocode/bots/{bot_id}/bot-versions/{version_id}/engine/", body)
         print(f"TEST status: {status}", flush=True)
-        return {"tested": 200 <= status < 300, "status": status, "response": data}
+        reply = self.reply_text(data)
+        if reply:
+            print(f"TEST reply: {reply[:500]}", flush=True)
+        return {"tested": 200 <= status < 300, "status": status, "reply": reply, "response": data}
+
+    @staticmethod
+    def reply_text(data: Any) -> str:
+        """Extract visible text from the engine envelope without exposing debug data."""
+        try:
+            items = data["data"]["attributes"]["payload"]["items"]
+            values = [item.get("bubble", {}).get("value") for item in items if isinstance(item, dict)]
+            return "\n".join(value for value in values if isinstance(value, str)).strip()
+        except (KeyError, TypeError):
+            return ""
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "platform_contract": return self.contract()

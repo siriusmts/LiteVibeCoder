@@ -25,6 +25,10 @@ class ValidationTests(unittest.TestCase):
             from mws_agent.cli import main
             self.assertEqual(main(["--validate-payload", str(path)]), 0)
 
+    def test_extracts_visible_engine_reply(self):
+        response = {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}, {"bubble": {"value": "World"}}]}}}}
+        self.assertEqual(Agent.reply_text(response), "Hello\nWorld")
+
 
 if __name__ == "__main__":
     unittest.main()

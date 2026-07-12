@@ -14,6 +14,7 @@
 - The first live import returned HTTP 422 because the platform additionally requires version `name` and `changesMessage`. The shared skill and validator now require them, plus the documented LangGraph graph shape.
 - A subsequent model request timed out before a payload was generated. The client now retries one transient model failure and flushes lifecycle logs immediately.
 - A successful import of bot `3927`, version `6481` established that an imported version must also be published before its engine can execute. After `publish`, an independent `Any message` smoke test returned HTTP 200 and `Hello World`.
+- The next simple scenario created bot `3929`, version `6483`. Its post-publish smoke test and three independent retries returned HTTP 200 with a short safe joke. Engine tests now retry one transient 5xx and print only the visible bot reply.
 
 ## Next checkpoint
 
