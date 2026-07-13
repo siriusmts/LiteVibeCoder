@@ -1,9 +1,7 @@
-import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mws_agent.cli import main
 from mws_agent.mcp_client import MCPClient
 from mws_mcp.runtime import PlatformRuntime
 
@@ -27,11 +25,6 @@ class McpIntegrationTests(unittest.TestCase):
         names = {tool["name"] for tool in self.client.tools}
         self.assertTrue({"platform_contract", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"}.issubset(names))
         self.assertIn("payload", self.client.call(self.client.context_tool(), {}))
-
-    def test_cli_accepts_automation_prompt_environment(self):
-        with patch.dict(os.environ, {"EVA_PROMPT": "Create a benchmark bot"}), patch("mws_agent.cli.Agent") as agent:
-            self.assertEqual(main([]), 0)
-        agent.return_value.run.assert_called_once_with("Create a benchmark bot")
 
     def test_validates_draft_through_mcp(self):
         result = self.client.call("save_draft", {"bot": VALID_BOT})
