@@ -69,3 +69,5 @@ Use this validated routing pattern for the more demanding HR Copilot and booking
 ## 2026-07-13 — stateful verification
 
 - Verification cases now support ordered steps in one shared engine session, so confirmation gates and other multi-turn behavior are checked through the public interface without domain-specific logic in the loop.
+- The generic verifier also accepts positive and forbidden regular expressions, allowing a task-defined plan to assert both required visible evidence and forbidden premature-success text.
+- Published MEDSI Booking MCP `4130`, version `6893`, scenario `1`: [open bot](http://5.188.27.251:18080/projects/4130?botVersionId=6893&activeScenarioId=1). Live sessions passed profile greeting, self booking through explicit confirmation, no appointment before confirmation, change-time return to real slots, child/ENT clinic discovery, dentistry subtype clarification, and unsupported-city regional contact. A separate explicit confirmation produced the real appointment `REC-5DF13C86`.
