@@ -32,7 +32,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--existing-bot-name")
     p.add_argument("--existing-version-name")
     p.add_argument("--dry-run", action="store_true", help="Validate and save payload without a platform write")
-    p.add_argument("--max-turns", type=int, default=20)
+    p.add_argument("--max-turns", type=int, default=10)
     p.add_argument("--test-message", default="Hello")
     p.add_argument("--validate-payload", help="Validate a saved bot attributes JSON and exit")
     return p
