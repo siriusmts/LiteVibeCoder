@@ -88,7 +88,9 @@ class Agent:
         request = urllib.request.Request(f"{self.c.llm_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {self.c.llm_key}"}, method="POST")
         for attempt in range(2):
             try:
-                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "90"))) as response:
+                # Bot plans with several branches can legitimately take longer than a short
+                # request timeout.  It remains operator-configurable for constrained runners.
+                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "180"))) as response:
                     return json.loads(response.read().decode("utf-8", "replace"))
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 if attempt: raise RuntimeError(f"LLM request failed: {error}") from error
@@ -105,6 +107,7 @@ class Agent:
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
+            available_tools = [tool["function"]["name"] for tool in mcp.openai_tools()]
             for _ in range(self.c.max_turns):
                 response = self.llm_request(messages, mcp.openai_tools())
                 message = ((response.get("choices") or [{}])[0].get("message") or {}); messages.append(message)
@@ -115,13 +118,28 @@ class Agent:
                     raise RuntimeError("agent stopped before the MCP verification tool passed")
                 for call in calls:
                     function = call.get("function") or {}; name = str(function.get("name", ""))
-                    try: arguments = json.loads(function.get("arguments") or "{}")
-                    except json.JSONDecodeError: arguments = {}
+                    try:
+                        arguments = json.loads(function.get("arguments") or "{}")
+                        if not isinstance(arguments, dict):
+                            raise ValueError("arguments must be a JSON object")
+                    except (json.JSONDecodeError, ValueError) as error:
+                        arguments = {}
+                        result = {"ok": False, "toolError": f"Invalid tool arguments: {error}", "availableTools": available_tools}
+                    else:
+                        try:
+                            result = mcp.call(name, arguments)
+                        except Exception as error:
+                            # A tool name can be hallucinated or a detachable MCP can reject an
+                            # invocation.  Give the factual failure back to the model so it can
+                            # select a discovered tool or repair its arguments on the next turn.
+                            result = {"ok": False, "toolError": str(error), "availableTools": available_tools}
+                            print(f"MCP TOOL failed: {name}: {error}", flush=True)
                     print(f"MCP TOOL: {name}", flush=True)
-                    result = mcp.call(name, arguments)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
                     role = mcp.tool_role(name)
+                    if result.get("frontendUrl"):
+                        print(f"Frontend URL: {result['frontendUrl']}", flush=True)
                     if role == "verification":
                         if result.get("passed"):
                             verified = True

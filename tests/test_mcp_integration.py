@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mws_agent.mcp_client import MCPClient
+from mws_agent.loop import Agent, Config
 from mws_mcp.runtime import PlatformRuntime
 
 
@@ -101,6 +102,33 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertNotIn("TOOLS =", source)
         self.assertNotIn("def publish(", source)
         self.assertNotIn("api/v3/nocode", source)
+
+    def test_loop_returns_unknown_tool_error_to_model_and_prints_published_link(self):
+        class FakeMcp:
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self): return [{"type": "function", "function": {"name": "verify_published_bot"}}]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else None
+            def call(self, name, arguments):
+                if name == "platform_contract": return {"payload": {}}
+                if name == "read_file": raise RuntimeError("MCP tools/call: Unknown MCP tool: read_file")
+                if name == "publish_draft": return {"published": True, "frontendUrl": "http://example.test/projects/1"}
+                return {"passed": True}
+
+        config = Config("", "", "", "", "", "http://llm.test", "key", "model", True, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
+        agent = Agent(config)
+        responses = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "read_file", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)), patch("sys.stdout") as stdout:
+            agent.run("Build a bot")
+        printed = "".join(str(call.args[0]) for call in stdout.write.call_args_list)
+        self.assertIn("Unknown MCP tool: read_file", printed)
+        self.assertIn("Frontend URL: http://example.test/projects/1", printed)
 
     def test_technical_engine_reply_does_not_pass_smoke_test(self):
         runtime = PlatformRuntime()
