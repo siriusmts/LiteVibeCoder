@@ -50,10 +50,13 @@ def main(argv: list[str] | None = None) -> int:
         errors = agent.validate(payload)
         print(json.dumps({"valid": not errors, "errors": errors}, ensure_ascii=False))
         return 0 if not errors else 2
-    if not args.prompt:
+    prompt = args.prompt or os.getenv("MWS_AGENT_PROMPT") or os.getenv("EVA_PROMPT")
+    if not prompt and not sys.stdin.isatty():
+        prompt = sys.stdin.read().strip()
+    if not prompt:
         parser().error("prompt is required unless --validate-payload is used")
     try:
-        agent.run(args.prompt)
+        agent.run(prompt)
     except Exception as error:
         print(f"Agent error: {error}", file=sys.stderr)
         return 1
