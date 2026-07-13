@@ -9,4 +9,3 @@ Use this platform-independent skill for any build/change task.
 5. Declare success only after the requested operation and the complete verification suite both succeed. Keep a concise progress journal.
 
 Never encode benchmark examples, hidden tests, or domain-specific sample answers in this skill.
-Never replace a user-required external integration with a static, mocked, or hard-coded flow merely because it validates structurally. Keep the required endpoint and data source real, or report the factual blocker before publication.
