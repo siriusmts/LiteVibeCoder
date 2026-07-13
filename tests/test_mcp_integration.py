@@ -50,15 +50,6 @@ class McpIntegrationTests(unittest.TestCase):
             self.assertEqual(agent.llm_request([], []), {"choices": []})
         self.assertEqual(request.call_args.kwargs["timeout"], 330)
 
-    def test_unknown_mcp_tool_becomes_model_feedback(self):
-        class BrokenMcp:
-            def call(self, name, arguments): raise RuntimeError("Unknown MCP tool")
-
-        agent = Agent.__new__(Agent)
-        result = agent.tool_result(BrokenMcp(), "read_file", {"path": "docs/task.md"})
-        self.assertFalse(result["terminal"])
-        self.assertIn("read_file", result["errors"][0])
-
     def test_validates_draft_through_mcp(self):
         result = self.client.call("save_draft", {"bot": VALID_BOT})
         self.assertTrue(result["valid"])

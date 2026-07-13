@@ -101,13 +101,6 @@ class Agent:
                 print(f"LLM request failed ({error}); retrying once.", flush=True); time.sleep(1)
         raise AssertionError("unreachable")
 
-    def tool_result(self, mcp: MCPClient, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Return tool failures to the model so it can recover within the same run."""
-        try:
-            return mcp.call(name, arguments)
-        except RuntimeError as error:
-            return {"terminal": False, "errors": [f"MCP tool {name} failed: {error}"]}
-
     def run(self, prompt: str) -> None:
         if not self.c.llm_url or not self.c.llm_key or not self.c.model: raise RuntimeError("COTYPE_BASE_URL, COTYPE_API_KEY, and COTYPE_MODEL are required")
         mcp = MCPClient()
@@ -131,7 +124,7 @@ class Agent:
                     try: arguments = json.loads(function.get("arguments") or "{}")
                     except json.JSONDecodeError: arguments = {}
                     print(f"MCP TOOL: {name}", flush=True)
-                    result = self.tool_result(mcp, name, arguments)
+                    result = mcp.call(name, arguments)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
                     role = mcp.tool_role(name)
