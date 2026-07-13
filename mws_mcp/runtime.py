@@ -237,7 +237,7 @@ class PlatformRuntime:
         if self.draft: self.artifact("last_platform_payload.json", self.envelope(self.draft))
         return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
 
-    def engine_test(self, message: str | None = None, expect_contains: Any = None, expect_buttons: Any = None, expect_command: Any = None) -> dict[str, Any]:
+    def engine_test(self, message: str | None = None, expect_contains: Any = None, expect_buttons: Any = None, expect_command: Any = None, session_id: str | None = None) -> dict[str, Any]:
         bot_id, version_id, _ = self.target(self.last_response)
         if not bot_id:
             bot_id = self.context.get("existingBotId")
@@ -249,7 +249,7 @@ class PlatformRuntime:
                 status, bot = self.request("GET", self.url("bot", botId=bot_id))
                 version_id = self.attributes(bot).get("currentVersionId") if 200 <= status < 300 else None
         if not bot_id or not version_id: return {"tested": False, "error": "no successful platform response"}
-        body = {"data": {"type": "engine", "attributes": {"sessionId": f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
+        body = {"data": {"type": "engine", "attributes": {"sessionId": session_id or f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
         status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         if status >= 500: time.sleep(1); status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         assertions = {"contains": False, "buttons": False, "command": False}
@@ -276,10 +276,28 @@ class PlatformRuntime:
     def verify(self, tests: Any) -> dict[str, Any]:
         if not isinstance(tests, list) or not tests:
             return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
-        invalid = [index for index, case in enumerate(tests) if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip() or not isinstance(case.get("message"), str)]
+        def valid_step(step: Any) -> bool:
+            return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
+
+        def valid_case(case: Any) -> bool:
+            if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip():
+                return False
+            has_message = isinstance(case.get("message"), str) and bool(case["message"].strip())
+            steps = case.get("steps")
+            has_steps = isinstance(steps, list) and bool(steps) and all(valid_step(step) for step in steps)
+            return has_message != has_steps
+
+        invalid = [index for index, case in enumerate(tests) if not valid_case(case)]
         if invalid:
-            return {"terminal": False, "passed": False, "errors": [f"each test needs non-empty name and message; invalid indices: {invalid}"]}
-        results = [{"name": case["name"], **self.engine_test(case["message"], case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand"))} for case in tests]
+            return {"terminal": False, "passed": False, "errors": [f"each test needs a non-empty name and exactly one of message or non-empty steps; invalid indices: {invalid}"]}
+        results = []
+        for case in tests:
+            if "message" in case:
+                results.append({"name": case["name"], **self.engine_test(case["message"], case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand"))})
+                continue
+            session_id = f"vibe-{uuid.uuid4().hex}"
+            steps = [{"message": step["message"], **self.engine_test(step["message"], step.get("expectContains"), step.get("expectButtons"), step.get("expectCommand"), session_id)} for step in case["steps"]]
+            results.append({"name": case["name"], "tested": all(step["tested"] for step in steps), "passed": all(step["passed"] for step in steps), "steps": steps})
         passed = len(results) == len(tests) and all(result.get("passed") for result in results)
         return {"terminal": passed, "passed": passed, "results": results}
 

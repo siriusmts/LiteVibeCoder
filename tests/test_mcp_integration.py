@@ -124,6 +124,21 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(failed["passed"])
         self.assertFalse(invalid["passed"])
 
+    def test_verification_suite_keeps_stateful_steps_in_one_session(self):
+        runtime = PlatformRuntime()
+        seen_sessions = []
+
+        def fake_engine(message, expect_contains=None, expect_buttons=None, expect_command=None, session_id=None):
+            seen_sessions.append(session_id)
+            return {"tested": True, "passed": True, "reply": message}
+
+        runtime.engine_test = fake_engine  # type: ignore[method-assign]
+        result = runtime.verify([{"name": "confirmation", "steps": [{"message": "choose a time"}, {"message": "yes, confirm"}]}])
+        self.assertTrue(result["passed"])
+        self.assertEqual(len(seen_sessions), 2)
+        self.assertIsNotNone(seen_sessions[0])
+        self.assertEqual(seen_sessions[0], seen_sessions[1])
+
 
 if __name__ == "__main__":
     unittest.main()

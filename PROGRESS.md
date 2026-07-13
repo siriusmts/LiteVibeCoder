@@ -65,3 +65,7 @@ Use this validated routing pattern for the more demanding HR Copilot and booking
 - Added generic validation and environment-materialisation for `agent` blocks with external MCP servers; the loop and work-style remain platform/domain neutral.
 - Discovered the live MEDSI MCP schema over SSE and published the profile-first integration bot `4130`, version `6716`. Its engine greeting invoked the real `get_profile` tool and returned the patient name `Аркадий Антонович`.
 - The booking branches are deliberately not marked complete yet: the remaining implementation must preserve the real-MCP-only, explicit-confirmation, and real-`REC-...` invariants.
+
+## 2026-07-13 — stateful verification
+
+- Verification cases now support ordered steps in one shared engine session, so confirmation gates and other multi-turn behavior are checked through the public interface without domain-specific logic in the loop.
