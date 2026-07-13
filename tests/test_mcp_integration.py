@@ -126,6 +126,10 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertNotIn("def publish(", source)
         self.assertNotIn("api/v3/nocode", source)
 
+    def test_loop_requires_real_user_requested_integrations(self):
+        source = (Path(__file__).resolve().parents[1] / "mws_agent" / "loop.py").read_text(encoding="utf-8")
+        self.assertIn("never replace it with a static dialogue", source)
+
     def test_technical_engine_reply_does_not_pass_smoke_test(self):
         runtime = PlatformRuntime()
         runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}

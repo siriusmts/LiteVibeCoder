@@ -24,7 +24,13 @@ name that states the covered path. Use ordered steps in one case when a behavior
 turns in the same session; otherwise use independent cases. If verification fails, inspect its factual feedback, repair the
 draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
 passes.
-Never invent results or tailor instructions to benchmark examples."""
+Never invent results or tailor instructions to benchmark examples. Structural validation is not
+evidence that a draft fulfils the user's requirements. Before publication, compare the draft with
+every required integration and invariant in the task. If the task requires a real external MCP,
+API, database, or service, use the corresponding platform-supported integration block and the
+provided endpoint; never replace it with a static dialogue, mock data, placeholder identifiers, or
+hard-coded results. If the required integration cannot be configured, report that factual blocker
+instead of publishing a substitute."""
 
 
 @dataclass
