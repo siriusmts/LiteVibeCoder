@@ -66,6 +66,8 @@ class PlatformRuntime:
             text = error.read().decode("utf-8", errors="replace")
             try: return error.code, json.loads(text)
             except json.JSONDecodeError: return error.code, {"error": text}
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            return 599, {"error": f"platform request failed: {error}"}
 
     def envelope(self, attributes: dict[str, Any]) -> dict[str, Any]:
         spec = self.platform.spec["payload"]

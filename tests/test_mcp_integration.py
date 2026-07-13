@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mws_agent.mcp_client import MCPClient
 from mws_mcp.runtime import PlatformRuntime
@@ -112,6 +113,13 @@ class McpIntegrationTests(unittest.TestCase):
         runtime.configure({"existingBotId": "bot", "existingVersionId": "version"})
         runtime.request = lambda *args, **kwargs: (200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}]}}}})  # type: ignore[method-assign]
         self.assertTrue(runtime.engine_test("hello")["tested"])
+
+    def test_network_timeout_becomes_a_failed_platform_result(self):
+        runtime = PlatformRuntime()
+        with patch("mws_mcp.runtime.urllib.request.urlopen", side_effect=TimeoutError("slow engine")):
+            status, result = runtime.request("GET", "http://platform.invalid")
+        self.assertEqual(status, 599)
+        self.assertIn("platform request failed", result["error"])
 
     def test_verification_suite_requires_all_assertions(self):
         runtime = PlatformRuntime()
