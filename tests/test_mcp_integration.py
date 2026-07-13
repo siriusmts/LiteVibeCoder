@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mws_agent.cli import main
+from mws_agent.cli import main, parser
 from mws_agent.loop import Agent
 from mws_agent.mcp_client import MCPClient
 from mws_mcp.runtime import PlatformRuntime
@@ -34,6 +34,9 @@ class McpIntegrationTests(unittest.TestCase):
         with patch.dict(os.environ, {"EVA_PROMPT": "Create a benchmark bot"}), patch("mws_agent.cli.Agent") as agent:
             self.assertEqual(main([]), 0)
         agent.return_value.run.assert_called_once_with("Create a benchmark bot")
+
+    def test_cli_default_turn_budget_supports_repair_cycles(self):
+        self.assertEqual(parser().parse_args([]).max_turns, 20)
 
     def test_llm_timeout_allows_proxy_upstream_to_finish(self):
         class Response:
