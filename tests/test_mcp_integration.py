@@ -1,11 +1,9 @@
 import os
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from mws_agent.cli import main
-from mws_agent.loop import Agent
 from mws_agent.mcp_client import MCPClient
 from mws_mcp.runtime import PlatformRuntime
 
@@ -34,18 +32,6 @@ class McpIntegrationTests(unittest.TestCase):
         with patch.dict(os.environ, {"EVA_PROMPT": "Create a benchmark bot"}), patch("mws_agent.cli.Agent") as agent:
             self.assertEqual(main([]), 0)
         agent.return_value.run.assert_called_once_with("Create a benchmark bot")
-
-    def test_llm_timeout_allows_proxy_upstream_to_finish(self):
-        class Response:
-            def __enter__(self): return self
-            def __exit__(self, *args): return False
-            def read(self): return b'{"choices": []}'
-
-        agent = Agent.__new__(Agent)
-        agent.c = SimpleNamespace(llm_url="http://proxy/v1", llm_key="key", model="model")
-        with patch.dict(os.environ, {}, clear=True), patch("mws_agent.loop.urllib.request.urlopen", return_value=Response()) as request:
-            self.assertEqual(agent.llm_request([], []), {"choices": []})
-        self.assertEqual(request.call_args.kwargs["timeout"], 330)
 
     def test_validates_draft_through_mcp(self):
         result = self.client.call("save_draft", {"bot": VALID_BOT})

@@ -88,7 +88,7 @@ class Agent:
         request = urllib.request.Request(f"{self.c.llm_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {self.c.llm_key}"}, method="POST")
         for attempt in range(2):
             try:
-                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "330"))) as response:
+                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "90"))) as response:
                     return json.loads(response.read().decode("utf-8", "replace"))
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 if attempt: raise RuntimeError(f"LLM request failed: {error}") from error
