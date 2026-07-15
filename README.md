@@ -33,7 +33,7 @@ Only remove `--dry-run` when the draft run is satisfactory and you intend to pub
 
 The startup log should show `MCP TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
 
-The default safety ceiling is 16 tool/repair turns (`--max-turns`); it is not a test-count limit. The model decides the verification suite size from the task. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. A `Frontend URL:` line is emitted immediately after a successful publication.
+The default safety ceiling is 16 tool/repair turns (`--max-turns`); it is not a test-count limit. The model decides the verification suite size from the task. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. A `Frontend URL:` line is emitted only after the published version passes the verification suite.
 
 ## Detachable MCP tools
 

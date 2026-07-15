@@ -107,6 +107,7 @@ class Agent:
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
             publication_needs_verification = False
+            pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             available_tools = [tool["function"]["name"] for tool in mcp.openai_tools()]
             for _ in range(self.c.max_turns):
@@ -142,12 +143,14 @@ class Agent:
                     print(f"MCP TOOL: {name}", flush=True)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
-                    if result.get("frontendUrl"):
-                        print(f"Frontend URL: {result['frontendUrl']}", flush=True)
+                    if role == "publication" and result.get("frontendUrl"):
+                        pending_frontend_url = str(result["frontendUrl"])
                     if role == "verification":
                         publication_needs_verification = False
                         if result.get("passed"):
                             verified = True
+                            if pending_frontend_url:
+                                print(f"Frontend URL: {pending_frontend_url}", flush=True)
                             print("Verification suite passed.", flush=True)
                             return
                         print("Verification failed; model must repair and retry.", flush=True)
@@ -157,7 +160,7 @@ class Agent:
                         print("Dry-run completed.", flush=True)
                         return
                     if result.get("terminal") and role != "publication":
-                        if result.get("frontendUrl"): print(f"Frontend URL: {result['frontendUrl']}", flush=True)
+                        if pending_frontend_url: print(f"Frontend URL: {pending_frontend_url}", flush=True)
                         test = result.get("test") or {}
                         if test.get("reply"): print(f"TEST reply: {test['reply'][:500]}", flush=True)
                         print("Run completed." if test.get("tested") or result.get("dryRun") else "Run stopped without a passing test.", flush=True)

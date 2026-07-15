@@ -132,7 +132,7 @@ class McpIntegrationTests(unittest.TestCase):
             def configure(self, context): return {}
             def context_tool(self): return "platform_contract"
             def openai_tools(self): return [{"type": "function", "function": {"name": "verify_published_bot"}}]
-            def tool_role(self, name): return "verification" if name == "verify_published_bot" else None
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
             def call(self, name, arguments):
                 if name == "platform_contract": return {"payload": {}}
                 if name == "read_file": raise RuntimeError("MCP tools/call: Unknown MCP tool: read_file")
@@ -151,6 +151,7 @@ class McpIntegrationTests(unittest.TestCase):
         printed = "".join(str(call.args[0]) for call in stdout.write.call_args_list)
         self.assertIn("Unknown MCP tool: read_file", printed)
         self.assertIn("Frontend URL: http://example.test/projects/1", printed)
+        self.assertLess(printed.index("Frontend URL:"), printed.index("Verification suite passed."))
 
     def test_dry_run_does_not_stop_on_the_context_tool(self):
         class FakeMcp:
@@ -225,6 +226,29 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertEqual(runtime.context["existingBotId"], "bot-1")
         self.assertTrue(runtime.publish()["published"])
         self.assertTrue(any(url.endswith("/bots/bot-1/import-version/") for url in routes))
+
+    def test_create_recovers_from_a_duplicate_bot_name_without_another_model_turn(self):
+        runtime = PlatformRuntime()
+        runtime.configure({"dryRun": False})
+        runtime.save_draft({**VALID_BOT, "botName": "joke_bot"})
+        imported_names = []
+
+        def request(method, url, body=None):
+            if url.endswith("/import/"):
+                imported_names.append(body["data"]["attributes"]["botName"])
+                if len(imported_names) == 1:
+                    return 422, {"error": {"title": "NonUniqueNameValueError", "detail": "already exists"}}
+                return 200, {"data": {"attributes": {"botId": "bot-1", "id": "version-1", "scenarios": [{"id": "scenario-1"}]}}}
+            if url.endswith("/engine/"):
+                return 200, {"data": {"attributes": {"payload": {"items": [{"bubble": {"value": "Hello"}}]}}}}
+            return 200, {}
+
+        runtime.request = request  # type: ignore[method-assign]
+        result = runtime.publish()
+        self.assertTrue(result["published"])
+        self.assertEqual(imported_names[0], "joke_bot")
+        self.assertRegex(imported_names[1], r"^joke_bot_[0-9a-f]{8}$")
+        self.assertEqual(result["nameConflictRepairs"][0]["previousBotName"], "joke_bot")
 
     def test_technical_engine_reply_does_not_pass_smoke_test(self):
         runtime = PlatformRuntime()

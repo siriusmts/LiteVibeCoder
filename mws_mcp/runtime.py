@@ -172,6 +172,21 @@ class PlatformRuntime:
             return item
         return visit(value)
 
+    def is_duplicate_name_error(self, status: int, response: Any) -> bool:
+        if status != 422:
+            return False
+        text = json.dumps(response, ensure_ascii=False).casefold()
+        return "nonuniquenamevalueerror" in text or "already exists" in text
+
+    def next_unique_bot_name(self) -> tuple[str, str]:
+        if not self.draft:
+            raise RuntimeError("no draft saved")
+        previous = str(self.draft.get("botName", "bot"))
+        suffix = "_" + uuid.uuid4().hex[:8]
+        candidate = previous[: 64 - len(suffix)].rstrip("_") + suffix
+        self.draft["botName"] = candidate
+        return previous, candidate
+
     def validate(self, bot: Any) -> list[str]:
         if not isinstance(bot, dict): return ["draft must be a JSON object"]
         rules = self.platform.spec["validation"]; errors: list[str] = []
@@ -363,8 +378,15 @@ class PlatformRuntime:
         if errors: return {"terminal": False, "published": False, "errors": errors}
         debug_payload = self.envelope(self.draft); payload = self.envelope(self.materialize_model_env(self.draft)); payload_path = self.artifact("last_platform_payload.json", debug_payload)
         if self.context.get("dryRun"): return {"terminal": True, "published": False, "dryRun": True, "payload": str(payload_path)}
-        status, data = self.request("POST", self.url("importVersion", botId=existing) if existing else self.url("import"), payload)
-        self.last_response = data; self.artifact("last_platform_response.json", data)
+        name_conflict_repairs = []
+        for _ in range(3):
+            status, data = self.request("POST", self.url("importVersion", botId=existing) if existing else self.url("import"), payload)
+            self.last_response = data; self.artifact("last_platform_response.json", data)
+            if existing or not self.is_duplicate_name_error(status, data):
+                break
+            previous, candidate = self.next_unique_bot_name()
+            name_conflict_repairs.append({"previousBotName": previous, "botName": candidate})
+            debug_payload = self.envelope(self.draft); payload = self.envelope(self.materialize_model_env(self.draft)); self.artifact("last_platform_payload.json", debug_payload)
         if not 200 <= status < 300: return {"terminal": False, "published": False, "status": status, "response": data}
         bot_id, version_id, scenario_id = self.target(data); active = existing or bot_id
         if not existing and active:
@@ -379,4 +401,4 @@ class PlatformRuntime:
         if not 200 <= publish_status < 300: return {"terminal": False, "published": False, "status": publish_status, "response": publish_data}
         link = self.frontend_url + self.platform.spec["frontend"]["path"].format(botId=bot_id, versionId=version_id, scenarioId=scenario_id) if scenario_id is not None else ""
         test = self.engine_test(self.context.get("testMessage"))
-        return {"terminal": False, "published": True, "botId": bot_id, "versionId": version_id, "scenarioId": scenario_id, "frontendUrl": link, "test": test}
+        return {"terminal": False, "published": True, "botId": bot_id, "versionId": version_id, "scenarioId": scenario_id, "frontendUrl": link, "test": test, "nameConflictRepairs": name_conflict_repairs}

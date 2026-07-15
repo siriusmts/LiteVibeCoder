@@ -8,6 +8,8 @@ For a new bot: import the validated draft, publish the returned version, then se
 
 After the first successful publication in a create run, repairs are imported as new versions of that created bot rather than as separate bots. Verify every published version before publishing another repair; the loop rejects an additional publication while verification of the latest one is pending.
 
+For a new project, use a portable lower-case `botName`. If the platform reports that it is already occupied, the runtime retries locally with a bounded unique suffix rather than spending another model turn or creating an unrelated project.
+
 Report the frontend URL with `botVersionId` and the first returned scenario `id` as `activeScenarioId`. A version is not ready merely because import succeeds.
 
 ## Payload rules

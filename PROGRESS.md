@@ -10,6 +10,8 @@
 - A live run revealed a repair-loop hazard: after a verification failure, the next publication created a new bot rather than a version of the first bot, and the model could publish twice without verifying the intervening version. The runtime now pins follow-up repairs to the first created bot and the loop requires verification between successful publications. Regression coverage covers both conditions; the suite passed 26 tests.
 - Strengthened generated-graph validation: empty answers, empty menus, duplicate node IDs, and unreachable local nodes now return actionable draft errors before publication. An interactive dry-run produced one valid three-node scenario with three menus and three answers; the expanded suite passed 29 tests.
 - Added `debug/last_run.json` and per-run manifests so draft and platform-response artifacts can be traced to the same run during diagnosis.
+- Reviewed the EVA analytics report for Joke Bot. Its hard checks were 3/3 and score 10/10, but EVA stopped the process after seeing a frontend link and recorded a nonzero exit code; the optional LLM judge was also disabled because its separate `API_TOKEN` was absent. The report used an older bundled `vendor/Agents.git` commit, not this worktree.
+- Deferred `Frontend URL` output until post-publication verification passes, preventing link-driven benchmark runners from terminating the agent mid-cycle. New-bot imports now recover from platform duplicate-name errors with a bounded local suffix retry. Regression coverage passed 30 tests.
 
 ## 2026-07-12 — minimal baseline
 
