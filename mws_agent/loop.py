@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -27,7 +28,13 @@ passes.
 After a tool with the publication role reports a successful publication, call the verification-role
 tool next. Do not publish the same saved draft again. To publish after a failed verification, first
 save a repaired valid draft. A prose response is never completion while verification has not passed.
-Never invent results or tailor instructions to benchmark examples."""
+Never invent results or tailor instructions to benchmark examples.
+When you build workflow nodes, obey these hard invariants:
+- A script block must contain `async def handler(context: Context) -> None:` and must not use any `import` or `from` statements.
+- Every workflow node containing an `llm`, `agent`, or `script` block must set `next_node_id` to an existing node in the same scenario unless it is terminal and explicitly allowed.
+- Verification tests must be a non-empty list; every case needs a non-empty `name` and exactly one of `message` or non-empty `steps`.
+- An `agent` block must use `tools: {"mcp_servers": [{"url": "http://..."}` or `https://...` with a real HTTP URL, never a placeholder literal.
+- Prefer simple valid payloads over ambitious invalid ones. If prior validation reports a platform rule, repair exactly that rule in the next draft."""
 
 
 @dataclass
@@ -69,6 +76,16 @@ class Agent:
         self.c = config
         self.work_style = read_skill(config.work_style_skill)
 
+    def expand_prompt_env(self, prompt: str) -> str:
+        def replace(match: Any) -> str:
+            name = match.group(1)
+            value = os.getenv(name, "")
+            if name.upper().endswith("_URL") and value.startswith(("http://", "https://")):
+                return value
+            return match.group(0)
+
+        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, prompt)
+
     def context(self) -> dict[str, Any]:
         return {
             "dryRun": self.c.dry_run,
@@ -107,7 +124,7 @@ class Agent:
             mcp.start(); mcp.configure(self.context())
             context = mcp.call(mcp.context_tool(), {})
             system = SYSTEM + f"\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
-            messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+            messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": self.expand_prompt_env(prompt)}]
             verified = False
             published_since_draft = False
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})

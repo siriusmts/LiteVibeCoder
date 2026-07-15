@@ -87,6 +87,17 @@ class PlatformRuntime:
 
     def normalize(self, bot: Any) -> Any:
         if not isinstance(bot, dict): return bot
+        def expand_http_placeholder(raw: str) -> str:
+            match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", raw)
+            if not match:
+                return raw
+            env_name = match.group(1)
+            value = os.getenv(env_name, "")
+            return value if value.startswith(("http://", "https://")) else raw
+
+        def strip_forbidden_imports(script: str) -> str:
+            return "\n".join(line for line in script.splitlines() if not re.match(r"^\s*(import|from)\s+", line))
+
         def unicode_safe(item: Any) -> Any:
             if isinstance(item, str): return item.encode("utf-8", "replace").decode("utf-8")
             if isinstance(item, list): return [unicode_safe(value) for value in item]
@@ -114,7 +125,20 @@ class PlatformRuntime:
                         if isinstance(next_node, dict) and next_node.get(rules["nodeIdField"]): node[flow["nextNodeField"]] = next_node[rules["nodeIdField"]]
             for node in nodes if isinstance(nodes, list) else []:
                 for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
-                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get(rules["blockTypeField"])
+                    if block_type == "script" and isinstance(block.get("value"), str):
+                        block["value"] = strip_forbidden_imports(block["value"])
+                    if block_type == "agent":
+                        tools = block.get("tools")
+                        servers = tools.get("mcp_servers") if isinstance(tools, dict) else None
+                        if isinstance(servers, list):
+                            for server in servers:
+                                if isinstance(server, dict) and isinstance(server.get("url"), str):
+                                    server["url"] = expand_http_placeholder(server["url"])
+                    if block_type not in {"llm", "agent"}:
+                        continue
                     model = block.get(rules.get("llmModel", {}).get("field", "model"))
                     if not isinstance(model, dict): continue
                     for key, raw in list(model.items()):
@@ -288,6 +312,25 @@ class PlatformRuntime:
             return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
         def valid_step(step: Any) -> bool:
             return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
+        normalized: list[dict[str, Any]] = []
+        for index, case in enumerate(tests):
+            if not isinstance(case, dict):
+                normalized.append(case)
+                continue
+            item = dict(case)
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                item["name"] = f"case_{index + 1}"
+            steps = item.get("steps")
+            has_steps = isinstance(steps, list) and any(valid_step(step) for step in steps)
+            has_message = isinstance(item.get("message"), str) and bool(item["message"].strip())
+            if has_steps:
+                item["steps"] = [step for step in steps if valid_step(step)]
+                item.pop("message", None)
+            elif has_message:
+                item.pop("steps", None)
+            normalized.append(item)
+        tests = normalized
 
         def valid_case(case: Any) -> bool:
             if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip():

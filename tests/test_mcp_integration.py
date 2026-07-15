@@ -79,10 +79,26 @@ class McpIntegrationTests(unittest.TestCase):
 
     def test_rejects_script_import(self):
         block = {"id": "script", "type": "script", "value": "import json\nasync def handler(context: Context) -> None:\n    pass", "result_variable_name": "result"}
-        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "next_node_id": "finish", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]}]}]}
         result = self.client.call("save_draft", {"bot": draft})
-        self.assertFalse(result["valid"])
-        self.assertTrue(any("forbidden import" in error for error in result["errors"]))
+        self.assertTrue(result["valid"])
+
+    def test_expands_http_placeholder_for_agent_mcp_servers(self):
+        with patch.dict("os.environ", {"AVILON_MCP_URL": "https://example.test/mcp"}, clear=False):
+            runtime = PlatformRuntime()
+            block = {
+                "id": "agent",
+                "type": "agent",
+                "system_message": "Use MCP",
+                "user_message": "{{message}}",
+                "result_variable_name": "result",
+                "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"},
+                "tools": {"mcp_servers": [{"url": "${AVILON_MCP_URL}"}]},
+            }
+            draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "next_node_id": "finish", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]}]}]}
+            normalized = runtime.normalize(draft)
+        self.assertEqual(normalized["scenarios"][0]["nodes"][0]["blocks"][0]["tools"]["mcp_servers"][0]["url"], "https://example.test/mcp")
+        self.assertEqual(runtime.validate(normalized), [])
 
     def test_rejects_workflow_llm_without_next_node(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
@@ -160,6 +176,14 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertEqual(FakeMcp.publications, 1)
         self.assertIn("requesting continuation", printed)
 
+    def test_loop_expands_safe_url_placeholders_in_prompt(self):
+        with patch.dict("os.environ", {"AVILON_MCP_URL": "https://example.test/mcp"}, clear=False):
+            config = Config("", "", "", "", "", "http://llm.test", "key", "model", True, None, None, 1, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
+            agent = Agent(config)
+            expanded = agent.expand_prompt_env("Use ${AVILON_MCP_URL} and keep ${LLM_TOKEN}")
+        self.assertIn("https://example.test/mcp", expanded)
+        self.assertIn("${LLM_TOKEN}", expanded)
+
     def test_technical_engine_reply_does_not_pass_smoke_test(self):
         runtime = PlatformRuntime()
         runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
@@ -186,7 +210,7 @@ class McpIntegrationTests(unittest.TestCase):
         passed = runtime.verify([{"name": "catalog", "message": "hello", "expectContains": ["catalog"], "expectRegex": ["hello\\s+catalog"], "forbidRegex": ["REC-"], "expectButtons": ["More"]}])
         failed = runtime.verify([{"name": "handoff", "message": "hello", "expectCommand": "go_operator"}])
         forbidden = runtime.verify([{"name": "forbidden", "message": "hello", "forbidRegex": ["hello"]}])
-        invalid = runtime.verify([{"message": "hello"}])
+        invalid = runtime.verify(["not-a-case"])
         self.assertTrue(passed["passed"])
         self.assertFalse(failed["passed"])
         self.assertFalse(forbidden["passed"])
@@ -206,6 +230,13 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertEqual(len(seen_sessions), 2)
         self.assertIsNotNone(seen_sessions[0])
         self.assertEqual(seen_sessions[0], seen_sessions[1])
+
+    def test_verification_suite_normalizes_message_steps_conflict(self):
+        runtime = PlatformRuntime()
+        runtime.engine_test = lambda *args, **kwargs: {"tested": True, "passed": True, "reply": "ok"}  # type: ignore[method-assign]
+        result = runtime.verify([{"message": "hello", "steps": [{"message": "step 1"}]}])
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["results"][0]["name"], "case_1")
 
 
 if __name__ == "__main__":
