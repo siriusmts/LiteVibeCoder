@@ -130,6 +130,36 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertIn("Unknown MCP tool: read_file", printed)
         self.assertIn("Frontend URL: http://example.test/projects/1", printed)
 
+    def test_loop_blocks_duplicate_publication_and_recovers_from_prose(self):
+        class FakeMcp:
+            publications = 0
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self): return [{"type": "function", "function": {"name": "publish_draft"}}, {"type": "function", "function": {"name": "verify_published_bot"}}]
+            def tool_role(self, name): return {"publish_draft": "publication", "verify_published_bot": "verification"}.get(name)
+            def call(self, name, arguments):
+                if name == "platform_contract": return {"payload": {}}
+                if name == "publish_draft":
+                    FakeMcp.publications += 1
+                    return {"published": True}
+                return {"passed": True}
+
+        config = Config("", "", "", "", "", "http://llm.test", "key", "model", True, None, None, 5, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
+        agent = Agent(config)
+        responses = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "Done"}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)), patch("sys.stdout") as stdout:
+            agent.run("Build a bot")
+        printed = "".join(str(call.args[0]) for call in stdout.write.call_args_list)
+        self.assertEqual(FakeMcp.publications, 1)
+        self.assertIn("requesting continuation", printed)
+
     def test_technical_engine_reply_does_not_pass_smoke_test(self):
         runtime = PlatformRuntime()
         runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}

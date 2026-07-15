@@ -17,7 +17,7 @@ The first command never changes the platform. For the desktop GUI, set `MTS_AGEN
 
 The startup log should show `MCP TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
 
-The default safety ceiling is 16 tool/repair turns (`--max-turns`); it is not a test-count limit. The model decides the verification suite size from the task. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. A `Frontend URL:` line is emitted immediately after a successful publication.
+The default safety ceiling is 16 tool/repair turns (`--max-turns`); it is not a test-count limit. The model decides the verification suite size from the task. The loop guards the generic publication-to-verification transition: it will not publish the same saved draft repeatedly, and a prose answer before a passed check is sent back for another tool turn. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. A `Frontend URL:` line is emitted immediately after a successful publication.
 
 ## Detachable MCP tools
 

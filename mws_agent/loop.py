@@ -24,6 +24,9 @@ name that states the covered path. Use ordered steps in one case when a behavior
 turns in the same session; otherwise use independent cases. If verification fails, inspect its factual feedback, repair the
 draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
 passes.
+After a tool with the publication role reports a successful publication, call the verification-role
+tool next. Do not publish the same saved draft again. To publish after a failed verification, first
+save a repaired valid draft. A prose response is never completion while verification has not passed.
 Never invent results or tailor instructions to benchmark examples."""
 
 
@@ -106,6 +109,7 @@ class Agent:
             system = SYSTEM + f"\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
+            published_since_draft = False
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             available_tools = [tool["function"]["name"] for tool in mcp.openai_tools()]
             for _ in range(self.c.max_turns):
@@ -115,9 +119,14 @@ class Agent:
                 if not calls:
                     if verified:
                         print(str(message.get("content") or "Completed.")); return
-                    raise RuntimeError("agent stopped before the MCP verification tool passed")
+                    # Models occasionally produce a natural-language wrap-up despite a failed or
+                    # missing check.  Preserve that turn, then explicitly resume the tool loop.
+                    print("Agent response without a required verification tool call; requesting continuation.", flush=True)
+                    messages.append({"role": "user", "content": "The run is incomplete: no verification has passed. Do not answer with prose. Use a discovered MCP tool now. If a version is published, call verification; otherwise save/validate/publish a repaired draft."})
+                    continue
                 for call in calls:
                     function = call.get("function") or {}; name = str(function.get("name", ""))
+                    role = mcp.tool_role(name)
                     try:
                         arguments = json.loads(function.get("arguments") or "{}")
                         if not isinstance(arguments, dict):
@@ -126,18 +135,24 @@ class Agent:
                         arguments = {}
                         result = {"ok": False, "toolError": f"Invalid tool arguments: {error}", "availableTools": available_tools}
                     else:
-                        try:
-                            result = mcp.call(name, arguments)
-                        except Exception as error:
-                            # A tool name can be hallucinated or a detachable MCP can reject an
-                            # invocation.  Give the factual failure back to the model so it can
-                            # select a discovered tool or repair its arguments on the next turn.
-                            result = {"ok": False, "toolError": str(error), "availableTools": available_tools}
-                            print(f"MCP TOOL failed: {name}: {error}", flush=True)
+                        if role == "publication" and published_since_draft:
+                            result = {"ok": False, "toolError": "A version from the current saved draft is already published. Call the verification tool, or save a repaired valid draft before publishing again.", "availableTools": available_tools}
+                        else:
+                            try:
+                                result = mcp.call(name, arguments)
+                            except Exception as error:
+                                # A tool name can be hallucinated or a detachable MCP can reject an
+                                # invocation.  Give the factual failure back to the model so it can
+                                # select a discovered tool or repair its arguments on the next turn.
+                                result = {"ok": False, "toolError": str(error), "availableTools": available_tools}
+                                print(f"MCP TOOL failed: {name}: {error}", flush=True)
                     print(f"MCP TOOL: {name}", flush=True)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
-                    role = mcp.tool_role(name)
+                    if name == "save_draft" and result.get("valid"):
+                        published_since_draft = False
+                    if role == "publication" and result.get("published"):
+                        published_since_draft = True
                     if result.get("frontendUrl"):
                         print(f"Frontend URL: {result['frontendUrl']}", flush=True)
                     if role == "verification":
