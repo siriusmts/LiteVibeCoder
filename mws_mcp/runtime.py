@@ -1,0 +1,382 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+from mws_agent.skills import PlatformSkill
+
+
+class PlatformRuntime:
+    """Stateful MWS implementation exposed only through the MCP server."""
+
+    def __init__(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source_root = Path(os.getenv("MTS_AGENT_DIR", root))
+        skill_root = source_root / "skills" if (source_root / "skills").is_dir() else root / "skills"
+        self.platform = PlatformSkill.load(Path(os.getenv("MWS_AGENT_PLATFORM_SKILL", skill_root / "mws-nocode")))
+        self.base_url = os.getenv("PLATFORM_BASE_URL", os.getenv("MTS_PLATFORM_BASE_URL", "http://5.188.27.251:18080")).rstrip("/")
+        self.frontend_url = os.getenv("PLATFORM_FRONTEND_URL", os.getenv("MTS_PLATFORM_FRONTEND_URL", self.base_url)).rstrip("/")
+        self.token = os.getenv("MTS_PLATFORM_TOKEN", "")
+        self.workspace = os.getenv("MTS_AI_WORKSPACE", "default")
+        self.account = os.getenv("MTS_AI_ACCOUNT", "default")
+        self.debug_dir = root / "debug"; self.debug_dir.mkdir(exist_ok=True)
+        self.draft: dict[str, Any] | None = None
+        self.last_response: Any = None
+        self.context: dict[str, Any] = {"dryRun": True, "testMessage": "Hello"}
+        self.inspected_existing_bot_id: str | None = None
+        self.run_artifacts: list[str] = []
+
+    def configure(self, value: dict[str, Any]) -> dict[str, Any]:
+        previous_run_id = self.context.get("runId")
+        self.context = {**self.context, **value}
+        self.context.setdefault("runId", uuid.uuid4().hex)
+        if self.context["runId"] != previous_run_id:
+            self.run_artifacts = []
+        # An MCP process can serve more than one run. Do not let an inspection
+        # from an earlier update authorize publication to a different bot.
+        if self.inspected_existing_bot_id != str(self.context.get("existingBotId") or ""):
+            self.inspected_existing_bot_id = None
+        return {"configured": True, "mode": "update" if self.context.get("existingBotId") else "create", "dryRun": bool(self.context.get("dryRun"))}
+
+    def artifact(self, name: str, value: Any) -> Path:
+        """Keep a per-run debugging record while retaining the convenient latest file."""
+        text = json.dumps(self.redact(value), ensure_ascii=False, indent=2)
+        latest = self.debug_dir / name
+        latest.write_text(text, encoding="utf-8")
+        runs = self.debug_dir / "runs"; runs.mkdir(exist_ok=True)
+        run_id = str(self.context.get("runId", "manual"))
+        (runs / f"{run_id}_{name}").write_text(text, encoding="utf-8")
+        if name not in self.run_artifacts:
+            self.run_artifacts.append(name)
+        manifest = {"runId": run_id, "artifacts": self.run_artifacts}
+        manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2)
+        (runs / f"{run_id}_manifest.json").write_text(manifest_text, encoding="utf-8")
+        (self.debug_dir / "last_run.json").write_text(manifest_text, encoding="utf-8")
+        return latest
+
+    def headers(self) -> dict[str, str]:
+        names = self.platform.spec["headers"]
+        result = {names["accept"]: "application/json", names["contentType"]: "application/json", names["workspace"]: self.workspace, names["requestId"]: uuid.uuid4().hex}
+        if self.token and self.token != "not-required": result["Authorization"] = f"Bearer {self.token}"
+        if self.account: result[names["account"]] = self.account
+        return result
+
+    def url(self, route: str, **values: Any) -> str:
+        return self.base_url + self.platform.route(route, **values)
+
+    def request(self, method: str, url: str, body: Any = None) -> tuple[int, Any]:
+        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=self.headers(), method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as response:
+                text = response.read().decode("utf-8", errors="replace")
+                return response.status, json.loads(text) if text else {}
+        except urllib.error.HTTPError as error:
+            text = error.read().decode("utf-8", errors="replace")
+            try: return error.code, json.loads(text)
+            except json.JSONDecodeError: return error.code, {"error": text}
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            return 599, {"error": f"platform request failed: {error}"}
+
+    def envelope(self, attributes: dict[str, Any]) -> dict[str, Any]:
+        spec = self.platform.spec["payload"]
+        return {spec["dataKey"]: {spec["typeKey"]: spec["typeValue"], spec["attributesKey"]: attributes}}
+
+    def attributes(self, response: Any) -> dict[str, Any]:
+        spec = self.platform.spec["response"]
+        data = response.get(spec["dataKey"]) if isinstance(response, dict) else None
+        return data.get(spec["attributesKey"], {}) if isinstance(data, dict) else {}
+
+    def target(self, response: Any) -> tuple[Any, Any, Any]:
+        attrs, spec = self.attributes(response), self.platform.spec["response"]
+        def first(fields: list[str]) -> Any: return next((attrs.get(key) for key in fields if attrs.get(key) is not None), None)
+        scenarios = attrs.get(spec["scenariosField"])
+        scenario_id = scenarios[0].get(spec["scenarioIdField"]) if isinstance(scenarios, list) and scenarios and isinstance(scenarios[0], dict) else None
+        return first(spec["botIdFields"]), first(spec["versionIdFields"]), scenario_id
+
+    def normalize(self, bot: Any) -> Any:
+        if not isinstance(bot, dict): return bot
+        def unicode_safe(item: Any) -> Any:
+            if isinstance(item, str): return item.encode("utf-8", "replace").decode("utf-8")
+            if isinstance(item, list): return [unicode_safe(value) for value in item]
+            if isinstance(item, dict): return {str(key): unicode_safe(value) for key, value in item.items()}
+            return item
+        value = unicode_safe(bot); rules = self.platform.spec["validation"]; aliases = self.platform.spec["normalization"]["entryEdges"]
+        for scenario in value.get(rules["scenariosField"], []):
+            if not isinstance(scenario, dict): continue
+            for edge in scenario.get(rules["entryEdgesField"], []):
+                if not isinstance(edge, dict): continue
+                target = aliases["targetField"]
+                if not edge.get(target):
+                    for alias in aliases["targetAliases"]:
+                        if edge.get(alias): edge[target] = edge[alias]; break
+                if edge.get(aliases["eventAlias"]):
+                    edge.setdefault(aliases["typeField"], aliases["eventType"]); edge.setdefault(aliases["valueField"], edge[aliases["eventAlias"]])
+            flow = rules.get("flow", {}); nodes = scenario.get(rules["nodesField"], [])
+            if flow.get("repairSequentialWorkflow") and isinstance(nodes, list):
+                for index, node in enumerate(nodes[:-1]):
+                    if not isinstance(node, dict) or node.get(flow["nextNodeField"]): continue
+                    blocks = node.get(rules["blocksField"], [])
+                    types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
+                    if any(kind in flow.get("requiresNextFor", []) for kind in types):
+                        next_node = nodes[index + 1]
+                        if isinstance(next_node, dict) and next_node.get(rules["nodeIdField"]): node[flow["nextNodeField"]] = next_node[rules["nodeIdField"]]
+            for node in nodes if isinstance(nodes, list) else []:
+                for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
+                    model = block.get(rules.get("llmModel", {}).get("field", "model"))
+                    if not isinstance(model, dict): continue
+                    for key, raw in list(model.items()):
+                        if not isinstance(raw, str): continue
+                        for env_name, secret in os.environ.items():
+                            if env_name.upper().endswith(("_URL", "_TOKEN", "_API_KEY", "_MODEL", "_MODEL_NAME")) and secret and raw == secret:
+                                model[key] = "${" + env_name + "}"; break
+        return value
+
+    def materialize_model_env(self, bot: dict[str, Any]) -> dict[str, Any]:
+        """Resolve only ${ENV_VAR} inside LLM model configs immediately before upload."""
+        value = json.loads(json.dumps(bot)); rules = self.platform.spec["validation"]
+        for scenario in value.get(rules["scenariosField"], []):
+            for node in scenario.get(rules["nodesField"], []) if isinstance(scenario, dict) else []:
+                for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
+                    if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
+                    model = block.get(rules.get("llmModel", {}).get("field", "model"))
+                    if not isinstance(model, dict): continue
+                    for key, raw in list(model.items()):
+                        if isinstance(raw, str):
+                            for env_name, secret in os.environ.items():
+                                if env_name.upper().endswith(("_URL", "_TOKEN", "_API_KEY", "_MODEL", "_MODEL_NAME")) and secret and raw == secret:
+                                    model[key] = "${" + env_name + "}"; raw = model[key]; break
+                        match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", raw) if isinstance(raw, str) else None
+                        if match:
+                            env_name = match.group(1); env_name = rules.get("llmModel", {}).get("envAliases", {}).get(env_name, env_name)
+                            if os.getenv(env_name): model[key] = os.environ[env_name]
+        return value
+
+    def redact(self, value: Any) -> Any:
+        secrets = {os.getenv(name, "") for name in os.environ if name.endswith(("_API_KEY", "_TOKEN"))}
+        def visit(item: Any) -> Any:
+            if isinstance(item, str):
+                for secret in secrets:
+                    if secret and len(secret) > 3: item = item.replace(secret, "********")
+                return item
+            if isinstance(item, list): return [visit(entry) for entry in item]
+            if isinstance(item, dict): return {key: visit(entry) for key, entry in item.items()}
+            return item
+        return visit(value)
+
+    def validate(self, bot: Any) -> list[str]:
+        if not isinstance(bot, dict): return ["draft must be a JSON object"]
+        rules = self.platform.spec["validation"]; errors: list[str] = []
+        for field, minimum in rules["stringFields"].items():
+            if not isinstance(bot.get(field), str) or len(bot[field].strip()) < int(minimum): errors.append(f"{field} must be a string of at least {minimum} characters")
+        for field, expected in rules["exactFields"].items():
+            if bot.get(field) != expected: errors.append(f"{field} must be {expected!r}")
+        for field, pattern in rules["patternFields"].items():
+            if not isinstance(bot.get(field), str) or not re.fullmatch(pattern, bot[field]): errors.append(f"{field} has an invalid format")
+        for field in rules["integerFields"]:
+            if not isinstance(bot.get(field), int): errors.append(f"{field} must be an integer")
+        for field, allowed in rules["enumFields"].items():
+            if bot.get(field) not in allowed: errors.append(f"{field} must be one of: {', '.join(allowed)}")
+        scenarios = bot.get(rules["scenariosField"])
+        if not isinstance(scenarios, list) or not scenarios: return errors + ["at least one scenario is required"]
+        for index, scenario in enumerate(scenarios):
+            if not isinstance(scenario, dict): errors.append(f"scenario {index} must be an object"); continue
+            edges, nodes = scenario.get(rules["entryEdgesField"]), scenario.get(rules["nodesField"])
+            if not scenario.get(rules["scenarioNameField"]): errors.append(f"scenario {index} has no name")
+            if not isinstance(edges, list) or not edges: errors.append(f"scenario {index} needs entryEdges")
+            if not isinstance(nodes, list) or not nodes: errors.append(f"scenario {index} needs nodes"); continue
+            node_ids = {str(node.get(rules["nodeIdField"])) for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])}
+            declared_node_ids = [str(node.get(rules["nodeIdField"])) for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])]
+            if len(node_ids) != len(declared_node_ids): errors.append(f"scenario {index} has duplicate node ids")
+            target_key = rules["interactive"]["targetNodeField"]
+            if not any(isinstance(edge, dict) and all(edge.get(k) == v for k, v in rules["entryEvent"].items()) for edge in edges or []): errors.append(f"scenario {index} needs its required entry event")
+            for edge in edges or []:
+                target = edge.get(target_key) if isinstance(edge, dict) else None
+                if target is None or str(target) not in node_ids: errors.append(f"scenario {index} has an entry edge to an unknown node: {target}")
+            for node in nodes:
+                if not isinstance(node, dict) or not node.get(rules["nodeIdField"]): errors.append(f"scenario {index} has a node without id"); continue
+                node_id = str(node[rules["nodeIdField"]]); blocks = node.get(rules["blocksField"])
+                if not isinstance(node.get(rules["nodeNameField"]), str) or not node[rules["nodeNameField"]].strip(): errors.append(f"node {node_id} needs a name")
+                if not isinstance(blocks, list) or not blocks: errors.append(f"node {node_id} needs blocks"); continue
+                block_types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
+                if any(kind in rules.get("flow", {}).get("requiresNextFor", []) for kind in block_types):
+                    next_id = node.get(rules["flow"]["nextNodeField"])
+                    if next_id is None or str(next_id) not in node_ids: errors.append(f"workflow node {node_id} needs next_node_id to an existing node")
+                for block in blocks:
+                    if not isinstance(block, dict) or not block.get(rules["blockIdField"]) or not block.get(rules["blockTypeField"]): errors.append(f"node {node_id} has an invalid block"); continue
+                    if block.get(rules["blockTypeField"]) == rules["answerType"] and (not isinstance(block.get(rules["answerValueField"]), str) or not block[rules["answerValueField"]].strip()): errors.append(f"answer block in {node_id} needs a non-empty value")
+                    for required in rules.get("blockRequirements", {}).get(block.get(rules["blockTypeField"]), []):
+                        if block.get(required) is None: errors.append(f"{block.get(rules['blockTypeField'])} block in {node_id} needs {required}")
+                    if block.get(rules["blockTypeField"]) == "script":
+                        script_rule = rules.get("script", {}); pattern = script_rule.get("requiredPattern")
+                        if pattern and (not isinstance(block.get("value"), str) or not re.search(pattern, block["value"])): errors.append(f"script block in {node_id} needs an async handler(context: Context)")
+                        forbidden = script_rule.get("forbiddenPattern")
+                        if forbidden and isinstance(block.get("value"), str) and re.search(forbidden, block["value"]): errors.append(f"script block in {node_id} uses a forbidden import")
+                    if block.get(rules["blockTypeField"]) in {"llm", "agent"}:
+                        kind = block[rules["blockTypeField"]]
+                        model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
+                        if not isinstance(model, dict): errors.append(f"{kind} block in {node_id} needs an object model config")
+                        else:
+                            for field in model_rule.get("requiredFields", []):
+                                if not model.get(field): errors.append(f"{kind} model in {node_id} needs {field}")
+                            pattern = model_rule.get("placeholderPattern")
+                            if pattern:
+                                for field in model_rule.get("requiredFields", []):
+                                    if not isinstance(model.get(field), str) or not re.fullmatch(pattern, model[field]): errors.append(f"{kind} model in {node_id} must use an environment placeholder for {field}")
+                        if kind == "agent":
+                            servers = (block.get("tools") or {}).get("mcp_servers") if isinstance(block.get("tools"), dict) else None
+                            if not isinstance(servers, list) or not all(isinstance(server, dict) and isinstance(server.get("url"), str) and server["url"].startswith(("http://", "https://")) for server in servers): errors.append(f"agent block in {node_id} needs tools.mcp_servers with HTTP URLs")
+                    if block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
+                        buttons = block.get(rules["interactive"]["buttonsField"])
+                        if not isinstance(buttons, list) or not buttons: errors.append(f"buttons block in {node_id} needs at least one button")
+                        for button in buttons if isinstance(buttons, list) else []:
+                            target = button.get(target_key) if isinstance(button, dict) else None
+                            if not isinstance(button, dict) or not button.get(rules["interactive"]["buttonTitleField"]) or str(target) not in node_ids: errors.append(f"buttons block in {node_id} has an invalid target")
+                    if block.get(rules["blockTypeField"]) == "single_if":
+                        target = block.get(target_key)
+                        if str(target) not in node_ids: errors.append(f"single_if block in {node_id} has an invalid target")
+            by_id = {str(node[rules["nodeIdField"]]): node for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])}
+            reachable: set[str] = set()
+            pending = [str(edge.get(target_key)) for edge in edges if isinstance(edge, dict) and str(edge.get(target_key)) in by_id]
+            while pending:
+                current = pending.pop()
+                if current in reachable: continue
+                reachable.add(current); node = by_id[current]
+                next_id = node.get(rules.get("flow", {}).get("nextNodeField", "next_node_id"))
+                if str(next_id) in by_id: pending.append(str(next_id))
+                for block in node.get(rules["blocksField"], []):
+                    if not isinstance(block, dict): continue
+                    if block.get(rules["blockTypeField"]) == rules["interactive"]["buttonsType"]:
+                        pending.extend(str(button.get(target_key)) for button in block.get(rules["interactive"]["buttonsField"], []) if isinstance(button, dict) and str(button.get(target_key)) in by_id)
+                    if block.get(rules["blockTypeField"]) == "single_if" and str(block.get(target_key)) in by_id:
+                        pending.append(str(block[target_key]))
+            if unreachable := sorted(node_ids - reachable): errors.append(f"scenario {index} has unreachable nodes: {', '.join(unreachable)}")
+        return errors
+
+    def contract(self) -> dict[str, Any]:
+        return {
+            "mode": "update" if self.context.get("existingBotId") else "create",
+            "dryRun": bool(self.context.get("dryRun")),
+            "updatePrecondition": "A successful inspect_existing_bot call is required before publishing an update.",
+            **{key: self.platform.spec[key] for key in ("payload", "validation", "normalization", "contract")},
+        }
+
+    def inspect(self) -> dict[str, Any]:
+        bot_id = self.context.get("existingBotId")
+        if not bot_id: return {"note": "No existing bot selected; create a new one."}
+        status, data = self.request("GET", self.url("bot", botId=bot_id))
+        if 200 <= status < 300:
+            self.inspected_existing_bot_id = str(bot_id)
+        return {"status": status, "data": data}
+
+    def save_draft(self, bot: Any) -> dict[str, Any]:
+        self.draft = self.normalize(bot); errors = self.validate(self.draft)
+        if self.draft: self.artifact("last_platform_payload.json", self.envelope(self.draft))
+        return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
+
+    def engine_test(self, message: str | None = None, expect_contains: Any = None, expect_buttons: Any = None, expect_command: Any = None, session_id: str | None = None, expect_regex: Any = None, forbid_regex: Any = None) -> dict[str, Any]:
+        bot_id, version_id, _ = self.target(self.last_response)
+        if not bot_id:
+            bot_id = self.context.get("existingBotId")
+        if bot_id and not version_id:
+            requested_version = self.context.get("existingVersionId")
+            if requested_version:
+                version_id = requested_version
+            else:
+                status, bot = self.request("GET", self.url("bot", botId=bot_id))
+                version_id = self.attributes(bot).get("currentVersionId") if 200 <= status < 300 else None
+        if not bot_id or not version_id: return {"tested": False, "error": "no successful platform response"}
+        body = {"data": {"type": "engine", "attributes": {"sessionId": session_id or f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
+        status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
+        if status >= 500: time.sleep(1); status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
+        assertions = {"contains": False, "buttons": False, "command": False, "regex": False, "forbidden": False}
+        buttons: list[str] = []; commands: list[str] = []
+        try:
+            payload = data["data"]["attributes"]["payload"]
+            items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+            reply = "\n".join((item.get("bubble") or {}).get("value", "") for item in items)
+            buttons = [button.get("title", "") for button in payload.get("suggestions", {}).get("buttons", [])]
+            commands = [item["command"].get("value", "") for item in items if isinstance(item.get("command"), dict)]
+        except (KeyError, TypeError): reply = ""
+        else:
+            expected_text = expect_contains if isinstance(expect_contains, list) else []
+            expected_buttons = expect_buttons if isinstance(expect_buttons, list) else []
+            expected_patterns = expect_regex if isinstance(expect_regex, list) else []
+            forbidden_patterns = forbid_regex if isinstance(forbid_regex, list) else []
+            def matches(pattern: Any) -> bool:
+                if not isinstance(pattern, str): return False
+                try: return bool(re.search(pattern, reply, flags=re.IGNORECASE))
+                except re.error: return False
+            assertions = {
+                "contains": all(isinstance(value, str) and value.casefold() in reply.casefold() for value in expected_text),
+                "buttons": all(isinstance(value, str) and value in buttons for value in expected_buttons),
+                "command": not expect_command or expect_command in commands,
+                "regex": all(matches(pattern) for pattern in expected_patterns),
+                "forbidden": all(not matches(pattern) for pattern in forbidden_patterns),
+            }
+        technical = not reply or "техническая ошибка" in reply.lower() or "technical error" in reply.lower()
+        tested = 200 <= status < 300 and not technical
+        return {"tested": tested, "passed": tested and all(assertions.values()), "status": status, "reply": reply, "buttons": buttons, "commands": commands, "assertions": assertions, "technical": technical, "response": self.redact(data)}
+
+    def verify(self, tests: Any) -> dict[str, Any]:
+        if not isinstance(tests, list) or not tests:
+            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
+        def valid_step(step: Any) -> bool:
+            return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
+
+        def valid_case(case: Any) -> bool:
+            if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip():
+                return False
+            has_message = isinstance(case.get("message"), str) and bool(case["message"].strip())
+            steps = case.get("steps")
+            has_steps = isinstance(steps, list) and bool(steps) and all(valid_step(step) for step in steps)
+            return has_message != has_steps
+
+        invalid = [index for index, case in enumerate(tests) if not valid_case(case)]
+        if invalid:
+            return {"terminal": False, "passed": False, "errors": [f"each test needs a non-empty name and exactly one of message or non-empty steps; invalid indices: {invalid}"]}
+        results = []
+        for case in tests:
+            if "message" in case:
+                results.append({"name": case["name"], **self.engine_test(case["message"], case.get("expectContains"), case.get("expectButtons"), case.get("expectCommand"), expect_regex=case.get("expectRegex"), forbid_regex=case.get("forbidRegex"))})
+                continue
+            session_id = f"vibe-{uuid.uuid4().hex}"
+            steps = [{"message": step["message"], **self.engine_test(step["message"], step.get("expectContains"), step.get("expectButtons"), step.get("expectCommand"), session_id, step.get("expectRegex"), step.get("forbidRegex"))} for step in case["steps"]]
+            results.append({"name": case["name"], "tested": all(step["tested"] for step in steps), "passed": all(step["passed"] for step in steps), "steps": steps})
+        passed = len(results) == len(tests) and all(result.get("passed") for result in results)
+        return {"terminal": passed, "passed": passed, "results": results}
+
+    def publish(self) -> dict[str, Any]:
+        if not self.draft: return {"terminal": False, "published": False, "error": "no draft saved"}
+        existing = self.context.get("existingBotId")
+        if existing and self.inspected_existing_bot_id != str(existing):
+            return {"terminal": False, "published": False, "error": "inspect_existing_bot must successfully read the selected bot before publishing an update"}
+        errors = self.validate(self.draft)
+        if errors: return {"terminal": False, "published": False, "errors": errors}
+        debug_payload = self.envelope(self.draft); payload = self.envelope(self.materialize_model_env(self.draft)); payload_path = self.artifact("last_platform_payload.json", debug_payload)
+        if self.context.get("dryRun"): return {"terminal": True, "published": False, "dryRun": True, "payload": str(payload_path)}
+        status, data = self.request("POST", self.url("importVersion", botId=existing) if existing else self.url("import"), payload)
+        self.last_response = data; self.artifact("last_platform_response.json", data)
+        if not 200 <= status < 300: return {"terminal": False, "published": False, "status": status, "response": data}
+        bot_id, version_id, scenario_id = self.target(data); active = existing or bot_id
+        if not existing and active:
+            # A repair after the first publish must create a new version of the
+            # bot we just created, not create another bot. This run owns that
+            # bot, so it is safe to authorize the follow-up update directly.
+            self.context["existingBotId"] = str(active)
+            self.inspected_existing_bot_id = str(active)
+        if existing and version_id: self.request("POST", self.url("makeCurrent", botId=existing, versionId=version_id))
+        if not active or not version_id: return {"terminal": False, "published": False, "error": "platform did not return bot/version id"}
+        publish_status, publish_data = self.request("POST", self.url("publish", botId=active, versionId=version_id))
+        if not 200 <= publish_status < 300: return {"terminal": False, "published": False, "status": publish_status, "response": publish_data}
+        link = self.frontend_url + self.platform.spec["frontend"]["path"].format(botId=bot_id, versionId=version_id, scenarioId=scenario_id) if scenario_id is not None else ""
+        test = self.engine_test(self.context.get("testMessage"))
+        return {"terminal": False, "published": True, "botId": bot_id, "versionId": version_id, "scenarioId": scenario_id, "frontendUrl": link, "test": test}

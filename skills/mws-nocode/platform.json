@@ -1,0 +1,35 @@
+{
+  "payload": {"dataKey": "data", "typeKey": "type", "typeValue": "bots", "attributesKey": "attributes"},
+  "headers": {"accept": "Accept", "contentType": "Content-Type", "workspace": "X-Ai-Workspace", "account": "X-Ai-Account", "requestId": "request-id"},
+  "routes": {
+    "bot": "/api/v3/nocode/bots/{botId}/",
+    "import": "/api/v3/nocode/bots/import/",
+    "importVersion": "/api/v3/nocode/bots/{botId}/import-version/",
+    "makeCurrent": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/make-current/",
+    "publish": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/publish/",
+    "engine": "/api/v3/nocode/bots/{botId}/bot-versions/{versionId}/engine/"
+  },
+  "frontend": {"path": "/projects/{botId}?botVersionId={versionId}&activeScenarioId={scenarioId}"},
+  "response": {"dataKey": "data", "attributesKey": "attributes", "botIdFields": ["botId", "id"], "versionIdFields": ["id", "currentVersionId"], "scenariosField": "scenarios", "scenarioIdField": "id", "replyPath": ["data", "attributes", "payload", "items"]},
+  "validation": {
+    "stringFields": {"name": 1, "changesMessage": 1, "noMatchStubAnswer": 4},
+    "integerFields": ["requestTtlInSeconds"],
+    "exactFields": {"engineType": "langgraph-engine"},
+    "patternFields": {"botName": "[a-z0-9_]{3,64}"},
+    "enumFields": {"needPreprocess": ["disabled", "required", "optional"]},
+    "scenariosField": "scenarios", "scenarioNameField": "name", "entryEdgesField": "entryEdges", "nodesField": "nodes", "nodeIdField": "id", "nodeNameField": "name", "blocksField": "blocks", "entryEvent": {"type": "event", "value": "init"}, "blockIdField": "id", "blockTypeField": "type", "answerType": "answer", "answerValueField": "value",
+    "interactive": {"buttonsType": "buttons", "buttonsField": "buttons", "buttonTitleField": "title", "targetNodeField": "target_node_id", "waitForUserType": "wait_for_user"},
+    "blockRequirements": {"llm": ["system_message", "user_message", "result_variable_name", "model"], "agent": ["system_message", "user_message", "result_variable_name", "model", "tools"], "script": ["value", "result_variable_name"], "extend": ["scenario_id"], "single_if": ["title", "expression", "code_type", "target_node_id"]},
+    "script": {"requiredPattern": "async\\s+def\\s+handler\\s*\\(context\\s*:\\s*Context\\)", "forbiddenPattern": "(?m)^\\s*(import|from)\\s+"},
+    "flow": {"nextNodeField": "next_node_id", "requiresNextFor": ["llm", "agent", "script"], "repairSequentialWorkflow": true},
+    "llmModel": {"field": "model", "requiredFields": ["url", "token", "model_name"], "placeholderPattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}", "envAliases": {"LLM_URL": "COTYPE_BASE_URL", "LLM_TOKEN": "COTYPE_API_KEY", "LLM_TOKEN_KATALSHOV": "COTYPE_API_KEY", "LLM_MODEL": "COTYPE_MODEL_NAME", "LLM_MODEL_NAME": "COTYPE_MODEL_NAME"}}
+  },
+  "normalization": {
+    "entryEdges": {"targetField": "target_node_id", "targetAliases": ["targetNodeId", "sourceNodeId"], "eventAlias": "sourceEvent", "typeField": "type", "valueField": "value", "eventType": "event"}
+  },
+  "contract": {
+    "draft": "Supply a bot attributes object that validates against platform.json.",
+    "graph": "Each scenario has a name, an event/init entry edge, nodes with unique ids and names, and nonempty blocks. Answer blocks have id, tags:null, type:answer, and value:text. Interactive menus use buttons [{title,target_node_id}] followed by wait_for_user; targets must refer to existing nodes. Multi-scenario flows declare unique local integer scenario ids and use extend blocks with scenario_id referencing those ids.",
+    "required": ["name", "changesMessage", "botName", "engineType", "requestTtlInSeconds", "noMatchStubAnswer", "needPreprocess", "scenarios"]
+  }
+}
