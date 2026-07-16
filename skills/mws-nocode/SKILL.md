@@ -30,6 +30,10 @@ An `llm` block needs `system_message`, `user_message`, `result_variable_name`, a
 
 An LLM or script node that is part of a workflow must set `next_node_id` to the next existing node. Use an explicit node containing `extend` when the workflow crosses into another scenario; link the preceding node to it through `next_node_id`. A terminal answer node may use `next_node_id: null`.
 
+## External integrations
+
+Scripts have no outbound HTTP capability. A raw REST URL is not an MCP server and must not be embedded in a script or passed as an MCP server URL. Use an `agent` block only when the user or runtime supplies a real, reachable MCP endpoint with documented tools. If the requested external capability has neither a native platform integration nor such an MCP endpoint, report the missing capability instead of publishing a simulated integration.
+
 For a task that needs a real external MCP data source, use an `agent` block rather than an HTTP wrapper around an `/mcp` endpoint. It needs the same portable model configuration as `llm`, plus `tools: {"mcp_servers": [{"url": "https://.../mcp"}]}`. Copy the documented server URL and tool semantics exactly into the task's agent prompt; do not invent source data or credentials. Route its named result to an answer or a guarded next step.
 
 ## Stateful routing and handoff

@@ -158,6 +158,13 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("forbidden import" in error for error in result["errors"]))
 
+    def test_rejects_network_url_in_script_without_network_capability(self):
+        block = {"id": "script", "type": "script", "value": "async def handler(context: Context) -> None:\n    endpoint = 'https://service.example/search'\n    context.session['result'] = endpoint", "result_variable_name": "result"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("outbound HTTP" in error for error in result["errors"]))
+
     def test_rejects_workflow_llm_without_next_node(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}

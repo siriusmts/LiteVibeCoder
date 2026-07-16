@@ -236,6 +236,9 @@ class PlatformRuntime:
                         if pattern and (not isinstance(block.get("value"), str) or not re.search(pattern, block["value"])): errors.append(f"script block in {node_id} needs an async handler(context: Context)")
                         forbidden = script_rule.get("forbiddenPattern")
                         if forbidden and isinstance(block.get("value"), str) and re.search(forbidden, block["value"]): errors.append(f"script block in {node_id} uses a forbidden import")
+                        network = script_rule.get("forbiddenNetworkPattern")
+                        if script_rule.get("networkAccess") is False and network and isinstance(block.get("value"), str) and re.search(network, block["value"], flags=re.IGNORECASE):
+                            errors.append(f"script block in {node_id} cannot make outbound HTTP requests; use a documented platform integration")
                     if block.get(rules["blockTypeField"]) in {"llm", "agent"}:
                         kind = block[rules["blockTypeField"]]
                         model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
