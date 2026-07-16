@@ -55,7 +55,10 @@ class Config:
             base_url=os.getenv("PLATFORM_BASE_URL", os.getenv("MTS_PLATFORM_BASE_URL", "http://5.188.27.251:18080")).rstrip("/"),
             frontend_url=os.getenv("PLATFORM_FRONTEND_URL", os.getenv("MTS_PLATFORM_FRONTEND_URL", "http://5.188.27.251:18080")).rstrip("/"),
             token=os.getenv("MTS_PLATFORM_TOKEN", ""), workspace=os.getenv("MTS_AI_WORKSPACE", "default"), account=os.getenv("MTS_AI_ACCOUNT", "default"),
-            llm_url=os.getenv("COTYPE_BASE_URL", os.getenv("MWS_BASE_URL", "")).rstrip("/"), llm_key=os.getenv("COTYPE_API_KEY", os.getenv("MWS_API_KEY", "")), model=os.getenv("COTYPE_MODEL", os.getenv("COTYPE_MODEL_NAME", os.getenv("MWS_MODEL_NAME", ""))),
+            # EVA supplies a local token-counting proxy for generation while
+            # retaining COTYPE_BASE_URL for the model configuration uploaded to
+            # the platform. Keep those two concerns separate.
+            llm_url=os.getenv("COTYPE_GENERATION_BASE_URL", os.getenv("COTYPE_BASE_URL", os.getenv("MWS_BASE_URL", ""))).rstrip("/"), llm_key=os.getenv("COTYPE_API_KEY", os.getenv("MWS_API_KEY", "")), model=os.getenv("COTYPE_MODEL", os.getenv("COTYPE_MODEL_NAME", os.getenv("MWS_MODEL_NAME", ""))),
             dry_run=args.dry_run, existing_bot_id=args.existing_bot_id, existing_version_id=args.existing_version_id, max_turns=max(1, args.max_turns), test_message=args.test_message, debug_dir=root / "debug", history_file=args.history_file,
             platform_skill_dir=Path(os.getenv("MWS_AGENT_PLATFORM_SKILL", skill_root / "mws-nocode")), work_style_skill=Path(os.getenv("MWS_AGENT_WORK_STYLE_SKILL", skill_root / "quality-loop" / "SKILL.md")),
         )

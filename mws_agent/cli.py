@@ -24,7 +24,7 @@ def load_env_file(path: str | None) -> None:
 def configuration_status(config: Config) -> dict[str, object]:
     """Report readiness without ever printing credentials."""
     required = {
-        "LLM base URL (COTYPE_BASE_URL or MWS_BASE_URL)": config.llm_url,
+        "LLM generation URL (COTYPE_GENERATION_BASE_URL, COTYPE_BASE_URL, or MWS_BASE_URL)": config.llm_url,
         "LLM API key (COTYPE_API_KEY or MWS_API_KEY)": config.llm_key,
         "LLM model (COTYPE_MODEL, COTYPE_MODEL_NAME, or MWS_MODEL_NAME)": config.model,
     }
@@ -47,7 +47,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--existing-bot-name")
     p.add_argument("--existing-version-name")
     p.add_argument("--dry-run", action="store_true", help="Validate and save payload without a platform write")
-    p.add_argument("--max-turns", type=int, default=16, help="Safety ceiling for tool/repair turns; verification-case count is chosen by the model")
+    p.add_argument("--max-turns", type=int, default=24, help="Safety ceiling for tool/repair turns; verification-case count is chosen by the model")
     p.add_argument("--test-message", default="Hello")
     p.add_argument("--validate-payload", help="Validate a saved bot attributes JSON and exit")
     p.add_argument("--check-config", action="store_true", help="Check required LLM settings without printing secrets or calling a provider")

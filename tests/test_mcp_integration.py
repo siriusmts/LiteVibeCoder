@@ -1,7 +1,9 @@
 import unittest
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mws_agent.cli import configuration_status
@@ -35,6 +37,22 @@ class McpIntegrationTests(unittest.TestCase):
         status = configuration_status(config)
         self.assertTrue(status["ready"])
         self.assertNotIn("secret-value", str(status))
+
+    def test_eva_generation_proxy_takes_priority_over_payload_url(self):
+        args = SimpleNamespace(dry_run=True, existing_bot_id=None, existing_version_id=None, max_turns=24, test_message="Hello", history_file=None)
+        with patch.dict(os.environ, {"COTYPE_GENERATION_BASE_URL": "http://127.0.0.1:9876/v1", "COTYPE_BASE_URL": "https://payload.example/v1", "COTYPE_API_KEY": "key", "COTYPE_MODEL": "model"}, clear=True):
+            config = Config.from_env(args)
+        self.assertEqual(config.llm_url, "http://127.0.0.1:9876/v1")
+
+    def test_eva_proxy_url_is_not_written_into_platform_model_config(self):
+        block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
+        with patch.dict(os.environ, {"COTYPE_GENERATION_BASE_URL": "http://127.0.0.1:9876/v1", "COTYPE_BASE_URL": "https://payload.example/v1", "COTYPE_API_KEY": "key", "COTYPE_MODEL_NAME": "model"}, clear=False):
+            materialized = PlatformRuntime().materialize_model_env(draft)
+        self.assertEqual(materialized["scenarios"][0]["nodes"][0]["blocks"][0]["model"]["url"], "https://payload.example/v1")
+
+    def test_cli_default_allows_a_full_repair_cycle(self):
+        self.assertEqual(__import__("mws_agent.cli", fromlist=["parser"]).parser().parse_args([]).max_turns, 24)
 
     def test_validates_draft_through_mcp(self):
         result = self.client.call("save_draft", {"bot": VALID_BOT})
