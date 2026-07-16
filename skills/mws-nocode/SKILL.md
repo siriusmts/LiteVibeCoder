@@ -18,7 +18,7 @@ Use the fields, routes, envelope, and validation rules in `platform.json`. They 
 
 ## Interactive flows
 
-For a menu or branching dialogue, use a `buttons` block with `buttons: [{"title": "…", "target_node_id": "…"}]`, followed by `wait_for_user`. A target must name a node in the same scenario. A node can answer, display another menu, or route to a subsequent node. This is a general interaction pattern; choose the actual menu items and content from the user's request.
+For a menu or branching dialogue, use a `buttons` block with `buttons: [{"title": "…", "target_node_id": "…"}]`, followed by `wait_for_user`. A target must name a node in the same scenario. A node can answer, display another menu, or route to a subsequent node. This is a general interaction pattern; choose the actual menu items and content from the user's request. Do not implement a visible menu through `single_if`: it is for guarded routing after processing, not for a user-facing choice. A `single_if` block must use `code_type` `python` or `custom`, never `javascript`.
 
 ## Multiple scenarios
 
