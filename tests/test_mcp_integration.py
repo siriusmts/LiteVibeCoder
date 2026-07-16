@@ -52,7 +52,7 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertEqual(materialized["scenarios"][0]["nodes"][0]["blocks"][0]["model"]["url"], "https://payload.example/v1")
 
     def test_cli_default_allows_a_full_repair_cycle(self):
-        self.assertEqual(__import__("mws_agent.cli", fromlist=["parser"]).parser().parse_args([]).max_turns, 24)
+        self.assertEqual(__import__("mws_agent.cli", fromlist=["parser"]).parser().parse_args([]).max_turns, 64)
 
     def test_validates_draft_through_mcp(self):
         result = self.client.call("save_draft", {"bot": VALID_BOT})

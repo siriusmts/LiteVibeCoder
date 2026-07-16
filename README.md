@@ -33,7 +33,7 @@ Only remove `--dry-run` when the draft run is satisfactory and you intend to pub
 
 The startup log should show `MCP TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
 
-The default safety ceiling is 24 tool/repair turns (`--max-turns`); it is not a test-count limit. The model decides the verification suite size from the task. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. When EVA provides `COTYPE_GENERATION_BASE_URL`, the agent uses it for model calls while preserving `COTYPE_BASE_URL` for the platform payload. A `Frontend URL:` line is emitted only after the published version passes the verification suite.
+The default emergency ceiling is 64 tool/repair turns (`--max-turns`); it is not a test-count limit or normal completion condition. The model decides the verification suite size and ends the run after it passes. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. When EVA provides `COTYPE_GENERATION_BASE_URL`, the agent uses it for model calls while preserving `COTYPE_BASE_URL` for the platform payload. A `Frontend URL:` line is emitted only after the published version passes the verification suite.
 
 ## Detachable MCP tools
 

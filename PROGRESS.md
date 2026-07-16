@@ -14,6 +14,7 @@
 - Deferred `Frontend URL` output until post-publication verification passes, preventing link-driven benchmark runners from terminating the agent mid-cycle. New-bot imports now recover from platform duplicate-name errors with a bounded local suffix retry. Regression coverage passed 30 tests.
 - Reviewed the full EVA batch against commit `597d36f`: 11 of 60 recorded task runs passed, while most remaining failures were LLM timeouts or verification-repair cycles stopped at the previous 16-turn ceiling. EVA did connect to the correct local Git commit and verified the copied source tree.
 - The runtime now honors EVA's `COTYPE_GENERATION_BASE_URL` token-proxy endpoint for LLM calls while retaining `COTYPE_BASE_URL` for bot payloads, and the default repair ceiling is 24 turns. Tests cover both URL separation and the new limit.
+- Raised the emergency tool/repair ceiling to 64 turns. Successful verification remains the normal completion condition chosen by the model; the ceiling only stops a genuinely stalled run.
 
 ## 2026-07-12 — minimal baseline
 

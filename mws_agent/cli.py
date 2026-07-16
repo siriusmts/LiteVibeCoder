@@ -47,7 +47,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--existing-bot-name")
     p.add_argument("--existing-version-name")
     p.add_argument("--dry-run", action="store_true", help="Validate and save payload without a platform write")
-    p.add_argument("--max-turns", type=int, default=24, help="Safety ceiling for tool/repair turns; verification-case count is chosen by the model")
+    p.add_argument("--max-turns", type=int, default=64, help="Emergency ceiling for tool/repair turns; normal completion is decided by the model after verification")
     p.add_argument("--test-message", default="Hello")
     p.add_argument("--validate-payload", help="Validate a saved bot attributes JSON and exit")
     p.add_argument("--check-config", action="store_true", help="Check required LLM settings without printing secrets or calling a provider")
