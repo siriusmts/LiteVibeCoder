@@ -75,6 +75,27 @@ def compact_tool_arguments(arguments: dict[str, Any]) -> str:
     return text if len(text) <= 4_000 else json.dumps({"truncated": True, "originalChars": len(text)}, ensure_ascii=False)
 
 
+def compact_platform_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Expose execution rules, not publisher implementation details, to the model."""
+    validation = context.get("validation") if isinstance(context.get("validation"), dict) else {}
+    useful_validation = {
+        key: validation[key]
+        for key in (
+            "stringFields", "integerFields", "exactFields", "patternFields", "enumFields",
+            "blockTypes", "blockRequirements", "interactive", "httpRequest", "templates",
+            "conditional", "script", "flow", "llmModel",
+        )
+        if key in validation
+    }
+    return {
+        "mode": context.get("mode"), "dryRun": context.get("dryRun"),
+        "updatePrecondition": context.get("updatePrecondition"),
+        "payload": context.get("payload"),
+        "validation": useful_validation,
+        "contract": context.get("contract"),
+    }
+
+
 @dataclass
 class Config:
     base_url: str
@@ -136,24 +157,75 @@ class Agent:
 
     def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {"model": self.c.model, "messages": messages, "tools": tools, "tool_choice": "auto", "temperature": 0.1}
+        thinking = os.getenv("LLM_ENABLE_THINKING", "").strip().lower()
+        if thinking in {"true", "false"}:
+            # vLLM-compatible Qwen deployments read this extension from their
+            # chat template. Keep it opt-in because standard providers need not
+            # recognize the field.
+            payload["chat_template_kwargs"] = {"enable_thinking": thinking == "true"}
+        streaming = os.getenv("LLM_STREAM", "").strip().lower() in {"1", "true", "yes"}
+        if streaming:
+            payload["stream"] = True
         request = urllib.request.Request(f"{self.c.llm_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {self.c.llm_key}"}, method="POST")
         for attempt in range(2):
             try:
                 # Bot plans with several branches can legitimately take longer than a short
                 # request timeout.  It remains operator-configurable for constrained runners.
-                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "180"))) as response:
+                # A full tool contract plus a multi-node graph can take longer
+                # than a short chat response, especially on shared model pools.
+                # Operators can still lower this with COTYPE_TIMEOUT.
+                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "600"))) as response:
+                    if streaming:
+                        return self.read_streaming_response(response)
                     return json.loads(response.read().decode("utf-8", "replace"))
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 if attempt: raise RuntimeError(f"LLM request failed: {error}") from error
                 print(f"LLM request failed ({error}); retrying once.", flush=True); time.sleep(1)
         raise AssertionError("unreachable")
 
+    @staticmethod
+    def read_streaming_response(response: Any) -> dict[str, Any]:
+        """Collect OpenAI-compatible SSE deltas into the usual chat response."""
+        message: dict[str, Any] = {"role": "assistant"}
+        text: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        for raw in response:
+            line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                delta = ((json.loads(data).get("choices") or [{}])[0].get("delta") or {})
+            except (json.JSONDecodeError, AttributeError, IndexError):
+                continue
+            if isinstance(delta.get("content"), str):
+                text.append(delta["content"])
+            for incoming in delta.get("tool_calls") or []:
+                if not isinstance(incoming, dict):
+                    continue
+                index = int(incoming.get("index", 0))
+                current = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                if incoming.get("id"):
+                    current["id"] = str(incoming["id"])
+                function = incoming.get("function") if isinstance(incoming.get("function"), dict) else {}
+                if function.get("name"):
+                    current["function"]["name"] += str(function["name"])
+                if function.get("arguments"):
+                    current["function"]["arguments"] += str(function["arguments"])
+        if text:
+            message["content"] = "".join(text)
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return {"choices": [{"message": message}]}
+
     def run(self, prompt: str) -> None:
         if not self.c.llm_url or not self.c.llm_key or not self.c.model: raise RuntimeError("COTYPE_BASE_URL, COTYPE_API_KEY, and COTYPE_MODEL are required")
         mcp = MCPClient()
         try:
             mcp.start(); mcp.configure(self.context())
-            context = mcp.call(mcp.context_tool(), {})
+            context = compact_platform_context(mcp.call(mcp.context_tool(), {}))
             is_create = not self.c.existing_bot_id
             mode_rules = (
                 "This is a CREATE run. Do not call inspect_existing_bot: no bot is selected and it is not useful."

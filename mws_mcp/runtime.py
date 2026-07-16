@@ -283,6 +283,13 @@ class PlatformRuntime:
                                 continue
                             if not isinstance(pairs, list) or any(not isinstance(pair, dict) or not all(isinstance(pair.get(key), str) and pair[key].strip() for key in http_rule.get("keyValueFields", ["key", "value"])) for pair in pairs):
                                 errors.append(f"http_request block in {node_id} has invalid {field}")
+                        mappings = block.get(http_rule.get("responseMappingField", "response_mapping"))
+                        key_pattern = http_rule.get("sessionKeyPattern")
+                        if key_pattern and isinstance(mappings, list):
+                            for pair in mappings:
+                                if isinstance(pair, dict) and not (isinstance(pair.get("key"), str) and re.fullmatch(key_pattern, pair["key"])):
+                                    errors.append(f"http_request block in {node_id} must map response values to explicit session.<field> keys")
+                                    break
                         for field in (http_rule.get("successTargetField", "ok_target_node_id"), http_rule.get("errorTargetField", "error_target_node_id")):
                             target = block.get(field)
                             if target is not None and str(target) not in node_ids:

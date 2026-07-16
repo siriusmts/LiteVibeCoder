@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from mws_agent.cli import configuration_status
 from mws_agent.mcp_client import MCPClient
-from mws_agent.loop import Agent, Config, compact_tool_result
+from mws_agent.loop import Agent, Config, compact_platform_context, compact_tool_result
 from mws_mcp.runtime import PlatformRuntime
 
 
@@ -43,6 +43,12 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertLess(len(result), 12_000)
         self.assertIn("raw response omitted", result)
 
+    def test_platform_context_omits_transport_details_but_keeps_execution_contract(self):
+        context = {"mode": "create", "payload": {"typeValue": "bots"}, "routes": {"import": "/secret-route"}, "validation": {"blockTypes": ["answer"], "flow": {"nextNodeField": "next_node_id"}, "ignored": "x"}, "contract": {"graph": "graph"}}
+        compact = compact_platform_context(context)
+        self.assertNotIn("routes", compact)
+        self.assertEqual(compact["validation"], {"blockTypes": ["answer"], "flow": {"nextNodeField": "next_node_id"}})
+
     def test_loop_does_not_repeat_full_draft_in_llm_history(self):
         class FakeMcp:
             def start(self): pass
@@ -70,6 +76,32 @@ class McpIntegrationTests(unittest.TestCase):
         with patch.dict(os.environ, {"COTYPE_GENERATION_BASE_URL": "http://127.0.0.1:9876/v1", "COTYPE_BASE_URL": "https://payload.example/v1", "COTYPE_API_KEY": "key", "COTYPE_MODEL": "model"}, clear=True):
             config = Config.from_env(args)
         self.assertEqual(config.llm_url, "http://127.0.0.1:9876/v1")
+
+    def test_provider_thinking_extension_is_opt_in(self):
+        config = Config("", "", "", "", "", "http://llm.test", "key", "model", True, None, None, 1, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
+        agent = Agent(config)
+        observed = []
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return b'{"choices":[{"message":{}}]}'
+        def open_request(request, timeout):
+            observed.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+        with patch.dict(os.environ, {"LLM_ENABLE_THINKING": "false"}, clear=False), patch("mws_agent.loop.urllib.request.urlopen", side_effect=open_request):
+            agent.llm_request([], [])
+        self.assertIs(observed[0]["chat_template_kwargs"]["enable_thinking"], False)
+
+    def test_streaming_response_reassembles_tool_call_arguments(self):
+        chunks = [
+            b'data: {"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"save_","arguments":"{\\"bot\\":"}}]}}]}\n',
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"draft","arguments":"{}}"}}]}}]}\n',
+            b'data: [DONE]\n',
+        ]
+        result = Agent.read_streaming_response(chunks)
+        call = result["choices"][0]["message"]["tool_calls"][0]
+        self.assertEqual(call["id"], "call-1")
+        self.assertEqual(call["function"], {"name": "save_draft", "arguments": '{"bot":{}}'})
 
     def test_eva_proxy_url_is_not_written_into_platform_model_config(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
@@ -191,6 +223,11 @@ class McpIntegrationTests(unittest.TestCase):
         result = self.client.call("save_draft", {"bot": draft})
         self.assertFalse(result["valid"])
         self.assertTrue(any("ok_target_node_id" in error for error in result["errors"]))
+        http["ok_target_node_id"] = "result"
+        http["response_mapping"][0]["key"] = "result"
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("explicit session" in error for error in result["errors"]))
 
     def test_rejects_non_platform_templates_and_python_condition_syntax(self):
         condition = {"id": "route", "type": "single_if", "title": "Route", "expression": "context['session']['found'] is not None and len(context['session']['found']) > 0", "code_type": "python", "target_node_id": "start"}
