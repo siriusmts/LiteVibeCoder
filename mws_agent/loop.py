@@ -24,6 +24,7 @@ name that states the covered path. Use ordered steps in one case when a behavior
 turns in the same session; otherwise use independent cases. If verification fails, inspect its factual feedback, repair the
 draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
 passes.
+When the requested behavior includes a user-facing menu or named buttons, implement those as actual buttons and assert every requested label in the verification plan; text that merely lists choices is insufficient.
 Never invent results or tailor instructions to benchmark examples."""
 
 
@@ -54,13 +55,19 @@ def compact_tool_result(result: Any) -> str:
 
 
 def compact_tool_arguments(arguments: dict[str, Any]) -> str:
-    """Retain a valid tool-call history without repeating a full draft every turn."""
+    """Retain a repairable draft while bounding unusually large tool histories."""
     if isinstance(arguments.get("bot"), dict):
+        # A normal no-code graph is small enough to remain in the next model
+        # turn. Omitting it makes the model copy our summary as a new draft and
+        # turns a single graph error into a permanent invalid-draft loop.
+        text = json.dumps(arguments, ensure_ascii=False)
+        if len(text) <= 16_000:
+            return text
         bot = arguments["bot"]
         summary = {
             "name": bot.get("name"), "botName": bot.get("botName"),
             "scenarioCount": len(bot.get("scenarios", [])) if isinstance(bot.get("scenarios"), list) else None,
-            "note": "full draft was sent to the MCP server and is omitted from conversation history",
+            "note": "full draft was sent to the MCP server and is omitted from conversation history because it exceeded 16000 characters; call get_saved_draft before repairing it",
         }
         return json.dumps({"bot": summary}, ensure_ascii=False)
     text = json.dumps(arguments, ensure_ascii=False)
@@ -146,15 +153,27 @@ class Agent:
         try:
             mcp.start(); mcp.configure(self.context())
             context = mcp.call(mcp.context_tool(), {})
-            system = SYSTEM + f"\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
+            is_create = not self.c.existing_bot_id
+            mode_rules = (
+                "This is a CREATE run. Do not call inspect_existing_bot: no bot is selected and it is not useful."
+                if is_create else
+                "This is an UPDATE run. Call inspect_existing_bot successfully before publishing."
+            ) + " A malformed verification plan is not a bot failure: correct and resubmit only verify_published_bot. If a valid verification plan reports failed behavior, call get_saved_draft, save a repaired draft, publish it, then verify it again."
+            system = SYSTEM + f"\n\n# Execution rules\n{mode_rules}\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
             publication_needs_verification = False
+            verification_plan_repair_only = False
+            behavior_repair_required = False
+            repair_publish_only = False
             pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
-            available_tools = [tool["function"]["name"] for tool in mcp.openai_tools()]
+            tools = mcp.openai_tools()
+            if is_create:
+                tools = [tool for tool in tools if tool["function"]["name"] != "inspect_existing_bot"]
+            available_tools = [tool["function"]["name"] for tool in tools]
             for _ in range(self.c.max_turns):
-                response = self.llm_request(messages, mcp.openai_tools())
+                response = self.llm_request(messages, tools)
                 message = ((response.get("choices") or [{}])[0].get("message") or {}); messages.append(message)
                 calls = message.get("tool_calls") or []
                 if not calls:
@@ -172,8 +191,15 @@ class Agent:
                         arguments = {}
                         result = {"ok": False, "toolError": f"Invalid tool arguments: {error}", "availableTools": available_tools}
                     else:
-                        if role == "publication" and publication_needs_verification:
-                            result = {"ok": False, "toolError": "verify_published_bot must run after the latest successful publication before another publication", "availableTools": available_tools}
+                        if name not in available_tools:
+                            result = {"ok": False, "toolError": f"Tool {name!r} is not available in this run mode", "availableTools": available_tools}
+                        elif verification_plan_repair_only and role != "verification":
+                            result = {"ok": False, "toolError": "The published bot has not been tested because the verification plan was invalid. Resubmit only verify_published_bot with a corrected tests array.", "availableTools": available_tools}
+                        elif repair_publish_only and role != "publication":
+                            result = {"ok": False, "toolError": "A repaired draft is valid and saved. Call publish_draft now; do not save it again.", "availableTools": available_tools}
+                        elif role == "publication" and (publication_needs_verification or behavior_repair_required):
+                            reason = "verify_published_bot must run after the latest successful publication before another publication" if publication_needs_verification else "A valid verification plan failed against the published bot. Save a repaired draft before publishing another version."
+                            result = {"ok": False, "toolError": reason, "availableTools": available_tools}
                         else:
                             try:
                                 result = mcp.call(name, arguments)
@@ -184,22 +210,47 @@ class Agent:
                                 result = {"ok": False, "toolError": str(error), "availableTools": available_tools}
                                 print(f"MCP TOOL failed: {name}: {error}", flush=True)
                     print(f"MCP TOOL: {name}", flush=True)
-                    if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
+                    if result.get("toolError"):
+                        print(f"MCP TOOL rejected: {result['toolError']}", flush=True)
+                    if result.get("errors"):
+                        label = "Verification plan invalid" if role == "verification" else "DRAFT invalid"
+                        print(f"{label}: {'; '.join(result['errors'])}", flush=True)
                     function["arguments"] = compact_tool_arguments(arguments)
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": compact_tool_result(result)})
                     if role == "publication" and result.get("frontendUrl"):
                         pending_frontend_url = str(result["frontendUrl"])
                     if role == "verification":
-                        publication_needs_verification = False
-                        if result.get("passed"):
+                        if result.get("errors"):
+                            verification_plan_repair_only = True
+                            publication_needs_verification = True
+                            print("Bot was not tested; model must correct and resubmit only the verification plan.", flush=True)
+                        elif result.get("passed"):
+                            publication_needs_verification = False
+                            verification_plan_repair_only = False
                             verified = True
                             if pending_frontend_url:
                                 print(f"Frontend URL: {pending_frontend_url}", flush=True)
                             print("Verification suite passed.", flush=True)
                             return
-                        print("Verification failed; model must repair and retry.", flush=True)
+                        else:
+                            publication_needs_verification = False
+                            verification_plan_repair_only = False
+                            behavior_repair_required = True
+                            if result.get("engineHealthy"):
+                                print("Published behavior did not meet verification assertions; use only requirements from the user, then repair the draft if the actual behavior is wrong.", flush=True)
+                            else:
+                                print("Published behavior failed verification; model must repair the draft and publish a new version.", flush=True)
+                    if name == "save_draft" and result.get("valid"):
+                        if behavior_repair_required:
+                            behavior_repair_required = False
+                            repair_publish_only = True
                     if role == "publication" and result.get("published"):
                         publication_needs_verification = True
+                        repair_publish_only = False
+                        smoke = result.get("test") or {}
+                        if smoke.get("reply"):
+                            print(f"SMOKE TEST reply: {str(smoke['reply'])[:500]}", flush=True)
+                        print("SMOKE TEST passed." if smoke.get("tested") else "SMOKE TEST failed; the verification suite will provide repair feedback.", flush=True)
                     if result.get("dryRun") and role == "publication":
                         print("Dry-run completed.", flush=True)
                         return

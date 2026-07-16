@@ -164,6 +164,13 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("single_if" in error for error in result["errors"]))
 
+    def test_rejects_platform_invalid_conditional_code_type(self):
+        block = {"id": "if", "type": "single_if", "title": "Route", "expression": "flag == True", "code_type": "javascript", "target_node_id": "start"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("code_type" in error for error in result["errors"]))
+
     def test_loop_has_no_platform_tool_registry(self):
         source = (Path(__file__).resolve().parents[1] / "mws_agent" / "loop.py").read_text(encoding="utf-8")
         self.assertNotIn("TOOLS =", source)
@@ -176,7 +183,7 @@ class McpIntegrationTests(unittest.TestCase):
             def stop(self): pass
             def configure(self, context): return {}
             def context_tool(self): return "platform_contract"
-            def openai_tools(self): return [{"type": "function", "function": {"name": "verify_published_bot"}}]
+            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "verify_published_bot")]
             def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
             def call(self, name, arguments):
                 if name == "platform_contract": return {"payload": {}}
@@ -194,7 +201,7 @@ class McpIntegrationTests(unittest.TestCase):
         with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)), patch("sys.stdout") as stdout:
             agent.run("Build a bot")
         printed = "".join(str(call.args[0]) for call in stdout.write.call_args_list)
-        self.assertIn("Unknown MCP tool: read_file", printed)
+        self.assertIn("not available in this run mode", printed)
         self.assertIn("Frontend URL: http://example.test/projects/1", printed)
         self.assertLess(printed.index("Frontend URL:"), printed.index("Verification suite passed."))
 
@@ -232,23 +239,34 @@ class McpIntegrationTests(unittest.TestCase):
             def stop(self): pass
             def configure(self, context): return {}
             def context_tool(self): return "platform_contract"
-            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("platform_contract", "publish_draft", "verify_published_bot")]
+            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("platform_contract", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft")]
             def tool_role(self, name): return "publication" if name == "publish_draft" else ("verification" if name == "verify_published_bot" else "context")
             def call(self, name, arguments):
                 self.calls.append(name)
                 if name == "platform_contract": return {}
                 if name == "publish_draft": return {"published": True}
                 if name == "verify_published_bot": return {"passed": len([call for call in self.calls if call == "verify_published_bot"]) > 1}
+                if name == "get_saved_draft": return {"available": True, "bot": {"name": "draft"}}
+                if name == "save_draft": return {"saved": True, "valid": True}
                 raise AssertionError(f"unexpected tool: {name}")
 
         fake_mcp = FakeMcp()
         config = Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 8, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
         agent = Agent(config)
-        calls = ["publish_draft", "publish_draft", "verify_published_bot", "publish_draft", "verify_published_bot"]
+        calls = ["publish_draft", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft", "save_draft", "publish_draft", "verify_published_bot"]
         responses = iter([{"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": str(index), "function": {"name": name, "arguments": "{}"}}]}}]} for index, name in enumerate(calls, start=1)])
         with patch("mws_agent.loop.MCPClient", return_value=fake_mcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)):
             agent.run("Build a bot")
-        self.assertEqual(fake_mcp.calls, ["platform_contract", "publish_draft", "verify_published_bot", "publish_draft", "verify_published_bot"])
+        self.assertEqual(fake_mcp.calls, ["platform_contract", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "verify_published_bot"])
+
+    def test_invalid_save_keeps_last_valid_draft_available_for_repair(self):
+        runtime = PlatformRuntime()
+        self.assertTrue(runtime.save_draft(VALID_BOT)["valid"])
+        valid = runtime.get_saved_draft()["bot"]
+        result = runtime.save_draft({"name": "broken", "scenarios": []})
+        self.assertFalse(result["valid"])
+        self.assertTrue(result["lastValidDraftAvailable"])
+        self.assertEqual(runtime.get_saved_draft()["bot"], valid)
 
     def test_new_bot_repairs_are_published_as_versions_of_the_first_bot(self):
         runtime = PlatformRuntime()
@@ -360,6 +378,14 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(failed["passed"])
         self.assertFalse(forbidden["passed"])
         self.assertFalse(invalid["passed"])
+        self.assertIn("case 0 needs a non-empty name", invalid["errors"])
+
+    def test_verification_reports_message_and_steps_conflict(self):
+        runtime = PlatformRuntime()
+        result = runtime.verify([{"name": "bad", "message": "hello", "steps": [{"message": "again"}]}])
+        self.assertFalse(result["passed"])
+        self.assertIn("has both message and steps", result["errors"][0])
+        self.assertIn("expectedStatefulCase", result)
 
     def test_verification_suite_keeps_stateful_steps_in_one_session(self):
         runtime = PlatformRuntime()

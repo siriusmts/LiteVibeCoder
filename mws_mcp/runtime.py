@@ -28,6 +28,7 @@ class PlatformRuntime:
         self.account = os.getenv("MTS_AI_ACCOUNT", "default")
         self.debug_dir = root / "debug"; self.debug_dir.mkdir(exist_ok=True)
         self.draft: dict[str, Any] | None = None
+        self.last_draft_attempt: dict[str, Any] | None = None
         self.last_response: Any = None
         self.context: dict[str, Any] = {"dryRun": True, "testMessage": "Hello"}
         self.inspected_existing_bot_id: str | None = None
@@ -258,6 +259,9 @@ class PlatformRuntime:
                     if block.get(rules["blockTypeField"]) == "single_if":
                         target = block.get(target_key)
                         if str(target) not in node_ids: errors.append(f"single_if block in {node_id} has an invalid target")
+                        allowed = rules.get("conditional", {}).get("allowedCodeTypes", [])
+                        if allowed and block.get("code_type") not in allowed:
+                            errors.append(f"single_if block in {node_id} must use code_type one of: {', '.join(allowed)}")
             by_id = {str(node[rules["nodeIdField"]]): node for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])}
             reachable: set[str] = set()
             pending = [str(edge.get(target_key)) for edge in edges if isinstance(edge, dict) and str(edge.get(target_key)) in by_id]
@@ -293,9 +297,35 @@ class PlatformRuntime:
         return {"status": status, "data": data}
 
     def save_draft(self, bot: Any) -> dict[str, Any]:
-        self.draft = self.normalize(bot); errors = self.validate(self.draft)
-        if self.draft: self.artifact("last_platform_payload.json", self.envelope(self.draft))
-        return {"saved": bool(self.draft), "valid": not errors, "errors": errors}
+        candidate = self.normalize(bot)
+        if isinstance(candidate, dict) and self.last_draft_attempt:
+            # Repair calls often contain only the fields that changed. Retain
+            # omitted top-level platform fields from the immediately preceding
+            # attempt, while arrays such as scenarios are deliberately replaced
+            # as a complete graph.
+            candidate = {**self.last_draft_attempt, **candidate}
+        self.last_draft_attempt = candidate if isinstance(candidate, dict) else None
+        errors = self.validate(candidate)
+        if isinstance(candidate, dict):
+            self.artifact("last_draft_attempt.json", self.envelope(candidate))
+        if errors:
+            # Keep the last valid draft available for repairs. Replacing it with
+            # a malformed tool call forces the model to reconstruct the graph
+            # from error text alone.
+            return {
+                "saved": False,
+                "valid": False,
+                "errors": errors,
+                "repairDraft": candidate,
+                "lastValidDraftAvailable": self.draft is not None,
+            }
+        self.draft = candidate
+        self.artifact("last_platform_payload.json", self.envelope(self.draft))
+        return {"saved": True, "valid": True, "errors": []}
+
+    def get_saved_draft(self) -> dict[str, Any]:
+        """Return the last valid draft so a failed live test can be repaired."""
+        return {"available": self.draft is not None, "bot": self.draft}
 
     def engine_test(self, message: str | None = None, expect_contains: Any = None, expect_buttons: Any = None, expect_command: Any = None, session_id: str | None = None, expect_regex: Any = None, forbid_regex: Any = None) -> dict[str, Any]:
         bot_id, version_id, _ = self.target(self.last_response)
@@ -343,21 +373,31 @@ class PlatformRuntime:
 
     def verify(self, tests: Any) -> dict[str, Any]:
         if not isinstance(tests, list) or not tests:
-            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"]}
+            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"], "expectedCase": {"name": "concise case name", "steps": [{"message": "first user message"}]}}
         def valid_step(step: Any) -> bool:
             return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
 
-        def valid_case(case: Any) -> bool:
+        def case_error(case: Any, index: int) -> str | None:
             if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip():
-                return False
+                return f"case {index} needs a non-empty name"
             has_message = isinstance(case.get("message"), str) and bool(case["message"].strip())
             steps = case.get("steps")
             has_steps = isinstance(steps, list) and bool(steps) and all(valid_step(step) for step in steps)
-            return has_message != has_steps
+            if has_message and has_steps:
+                return f"case {index} has both message and steps; remove message or steps (keep steps for a stateful flow)"
+            if not has_message and not has_steps:
+                return f"case {index} needs exactly one of a non-empty message or non-empty steps"
+            return None
 
-        invalid = [index for index, case in enumerate(tests) if not valid_case(case)]
+        invalid = [error for index, case in enumerate(tests) if (error := case_error(case, index))]
         if invalid:
-            return {"terminal": False, "passed": False, "errors": [f"each test needs a non-empty name and exactly one of message or non-empty steps; invalid indices: {invalid}"]}
+            return {
+                "terminal": False,
+                "passed": False,
+                "errors": invalid,
+                "expectedCase": {"name": "concise case name", "message": "one independent user message"},
+                "expectedStatefulCase": {"name": "stateful path", "steps": [{"message": "first user message"}, {"message": "next user message"}]},
+            }
         results = []
         for case in tests:
             if "message" in case:
@@ -367,7 +407,13 @@ class PlatformRuntime:
             steps = [{"message": step["message"], **self.engine_test(step["message"], step.get("expectContains"), step.get("expectButtons"), step.get("expectCommand"), session_id, step.get("expectRegex"), step.get("forbidRegex"))} for step in case["steps"]]
             results.append({"name": case["name"], "tested": all(step["tested"] for step in steps), "passed": all(step["passed"] for step in steps), "steps": steps})
         passed = len(results) == len(tests) and all(result.get("passed") for result in results)
-        return {"terminal": passed, "passed": passed, "results": results}
+        engine_healthy = all(
+            all(step.get("tested") for step in result.get("steps", [])) if "steps" in result else result.get("tested")
+            for result in results
+        )
+        outcome = {"terminal": passed, "passed": passed, "engineHealthy": engine_healthy, "results": results}
+        self.artifact("last_verification.json", {"tests": tests, **outcome})
+        return outcome
 
     def publish(self) -> dict[str, Any]:
         if not self.draft: return {"terminal": False, "published": False, "error": "no draft saved"}
