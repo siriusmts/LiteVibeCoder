@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from mws_agent.cli import configuration_status
 from mws_agent.mcp_client import MCPClient
-from mws_agent.loop import Agent, Config
+from mws_agent.loop import Agent, Config, compact_tool_result
 from mws_mcp.runtime import PlatformRuntime
 
 
@@ -37,6 +37,33 @@ class McpIntegrationTests(unittest.TestCase):
         status = configuration_status(config)
         self.assertTrue(status["ready"])
         self.assertNotIn("secret-value", str(status))
+
+    def test_large_tool_responses_are_compacted_before_returning_to_the_model(self):
+        result = compact_tool_result({"reply": "ok", "response": {"data": "x" * 50_000}})
+        self.assertLess(len(result), 12_000)
+        self.assertIn("raw response omitted", result)
+
+    def test_loop_does_not_repeat_full_draft_in_llm_history(self):
+        class FakeMcp:
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("platform_contract", "save_draft", "verify_published_bot")]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("context" if name == "platform_contract" else None)
+            def call(self, name, arguments): return {"passed": True} if name == "verify_published_bot" else {"valid": True}
+
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 3, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        large = "x" * 30_000
+        responses = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "save_draft", "arguments": json.dumps({"bot": {"name": "Draft", "botName": "draft", "scenarios": [], "large": large}})}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda *args: next(responses)) as request:
+            agent.run("Build a bot")
+        history = json.dumps(request.call_args_list[1].args[0], ensure_ascii=False)
+        self.assertNotIn(large, history)
+        self.assertIn("full draft was sent", history)
 
     def test_eva_generation_proxy_takes_priority_over_payload_url(self):
         args = SimpleNamespace(dry_run=True, existing_bot_id=None, existing_version_id=None, max_turns=24, test_message="Hello", history_file=None)

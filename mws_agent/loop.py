@@ -27,6 +27,46 @@ passes.
 Never invent results or tailor instructions to benchmark examples."""
 
 
+def compact_tool_result(result: Any) -> str:
+    """Keep tool feedback useful without letting raw platform payloads exhaust context."""
+    def visit(value: Any, depth: int = 0) -> Any:
+        if isinstance(value, str):
+            return value if len(value) <= 2_000 else value[:2_000] + "… [truncated]"
+        if isinstance(value, list):
+            items = [visit(item, depth + 1) for item in value[:24]]
+            return items + ([f"… {len(value) - 24} more items omitted"] if len(value) > 24 else [])
+        if isinstance(value, dict):
+            compact: dict[str, Any] = {}
+            for key, item in value.items():
+                if key == "response":
+                    error = item.get("error") if isinstance(item, dict) else None
+                    compact["responseError"] = visit(error, depth + 1) if error else "raw response omitted; use status, reply, assertions, or errors"
+                else:
+                    compact[str(key)] = visit(item, depth + 1)
+            return compact
+        return value
+
+    text = json.dumps(visit(result), ensure_ascii=False)
+    limit = max(1_000, int(os.getenv("MWS_AGENT_TOOL_RESULT_CHARS", "12000")))
+    if len(text) <= limit:
+        return text
+    return json.dumps({"truncated": True, "originalChars": len(text), "preview": text[:limit]}, ensure_ascii=False)
+
+
+def compact_tool_arguments(arguments: dict[str, Any]) -> str:
+    """Retain a valid tool-call history without repeating a full draft every turn."""
+    if isinstance(arguments.get("bot"), dict):
+        bot = arguments["bot"]
+        summary = {
+            "name": bot.get("name"), "botName": bot.get("botName"),
+            "scenarioCount": len(bot.get("scenarios", [])) if isinstance(bot.get("scenarios"), list) else None,
+            "note": "full draft was sent to the MCP server and is omitted from conversation history",
+        }
+        return json.dumps({"bot": summary}, ensure_ascii=False)
+    text = json.dumps(arguments, ensure_ascii=False)
+    return text if len(text) <= 4_000 else json.dumps({"truncated": True, "originalChars": len(text)}, ensure_ascii=False)
+
+
 @dataclass
 class Config:
     base_url: str
@@ -145,7 +185,8 @@ class Agent:
                                 print(f"MCP TOOL failed: {name}: {error}", flush=True)
                     print(f"MCP TOOL: {name}", flush=True)
                     if result.get("errors"): print(f"DRAFT invalid: {'; '.join(result['errors'])}", flush=True)
-                    messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": json.dumps(result, ensure_ascii=False)})
+                    function["arguments"] = compact_tool_arguments(arguments)
+                    messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": compact_tool_result(result)})
                     if role == "publication" and result.get("frontendUrl"):
                         pending_frontend_url = str(result["frontendUrl"])
                     if role == "verification":
