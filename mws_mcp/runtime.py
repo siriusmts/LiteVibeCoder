@@ -226,9 +226,30 @@ class PlatformRuntime:
                 if any(kind in rules.get("flow", {}).get("requiresNextFor", []) for kind in block_types):
                     next_id = node.get(rules["flow"]["nextNodeField"])
                     if next_id is None or str(next_id) not in node_ids: errors.append(f"workflow node {node_id} needs next_node_id to an existing node")
+                def has_dollar_template(value: Any) -> bool:
+                    marker = rules.get("templates", {}).get("forbiddenDollarPrefix", "${")
+                    if isinstance(value, str):
+                        return marker in value
+                    if isinstance(value, list):
+                        return any(has_dollar_template(item) for item in value)
+                    if isinstance(value, dict):
+                        return any(has_dollar_template(item) for item in value.values())
+                    return False
+
                 for block in blocks:
                     if not isinstance(block, dict) or not block.get(rules["blockIdField"]) or not block.get(rules["blockTypeField"]): errors.append(f"node {node_id} has an invalid block"); continue
+                    block_type = block.get(rules["blockTypeField"])
+                    if block_type not in rules.get("blockTypes", []):
+                        errors.append(f"node {node_id} has an unknown block type: {block_type}")
+                    if rules.get("flow", {}).get("disallowBlockNextNode") and rules.get("flow", {}).get("nextNodeField") in block:
+                        errors.append(f"block in {node_id} must not contain next_node_id; put sequential routing on its node")
                     if block.get(rules["blockTypeField"]) == rules["answerType"] and (not isinstance(block.get(rules["answerValueField"]), str) or not block[rules["answerValueField"]].strip()): errors.append(f"answer block in {node_id} needs a non-empty value")
+                    template_fields = ("value", "url", "body", "headers", "response_mapping", "system_message", "user_message")
+                    if block.get(rules["blockTypeField"]) in {rules["answerType"], "http_request", "llm", "agent"} and any(has_dollar_template(block.get(field)) for field in template_fields):
+                        errors.append(f"block in {node_id} uses unsupported ${{...}} template syntax; use {{{{scope.variable}}}}")
+                    context_template = rules.get("templates", {}).get("forbiddenContextReferencePattern")
+                    if context_template and block.get(rules["blockTypeField"]) in {rules["answerType"], "http_request", "llm", "agent"} and any(isinstance(block.get(field), str) and re.search(context_template, block[field]) for field in template_fields):
+                        errors.append(f"block in {node_id} uses unsupported context template reference; use a scoped variable such as {{{{system.last_user_message}}}}")
                     for required in rules.get("blockRequirements", {}).get(block.get(rules["blockTypeField"]), []):
                         if block.get(required) is None: errors.append(f"{block.get(rules['blockTypeField'])} block in {node_id} needs {required}")
                     if block.get(rules["blockTypeField"]) == "script":
@@ -236,9 +257,36 @@ class PlatformRuntime:
                         if pattern and (not isinstance(block.get("value"), str) or not re.search(pattern, block["value"])): errors.append(f"script block in {node_id} needs an async handler(context: Context)")
                         forbidden = script_rule.get("forbiddenPattern")
                         if forbidden and isinstance(block.get("value"), str) and re.search(forbidden, block["value"]): errors.append(f"script block in {node_id} uses a forbidden import")
+                        for context_pattern in script_rule.get("forbiddenContextPatterns", []):
+                            if isinstance(block.get("value"), str) and re.search(context_pattern, block["value"]):
+                                errors.append(f"script block in {node_id} uses dictionary-style context access; use context.session.field or another direct scope attribute")
+                                break
                         network = script_rule.get("forbiddenNetworkPattern")
                         if script_rule.get("networkAccess") is False and network and isinstance(block.get("value"), str) and re.search(network, block["value"], flags=re.IGNORECASE):
-                            errors.append(f"script block in {node_id} cannot make outbound HTTP requests; use a documented platform integration")
+                            errors.append(f"script block in {node_id} cannot make outbound HTTP requests; use the native http_request block for REST APIs")
+                    http_rule = rules.get("httpRequest", {})
+                    if block.get(rules["blockTypeField"]) == http_rule.get("type", "http_request"):
+                        method = block.get("method")
+                        if not isinstance(method, str) or method.upper() not in http_rule.get("methods", []):
+                            errors.append(f"http_request block in {node_id} needs a supported HTTP method")
+                        if not isinstance(block.get("url"), str) or not block["url"].strip():
+                            errors.append(f"http_request block in {node_id} needs a non-empty url")
+                        timeout = block.get(http_rule.get("timeoutField", "timeout"))
+                        if timeout is not None and (not isinstance(timeout, int) or timeout < 1):
+                            errors.append(f"http_request block in {node_id} has an invalid timeout")
+                        retries = block.get(http_rule.get("retriesField", "retry_attempts_count"))
+                        if retries is not None and (not isinstance(retries, int) or retries < 0):
+                            errors.append(f"http_request block in {node_id} has invalid retry_attempts_count")
+                        for field in (http_rule.get("headersField", "headers"), http_rule.get("responseMappingField", "response_mapping")):
+                            pairs = block.get(field)
+                            if pairs is None:
+                                continue
+                            if not isinstance(pairs, list) or any(not isinstance(pair, dict) or not all(isinstance(pair.get(key), str) and pair[key].strip() for key in http_rule.get("keyValueFields", ["key", "value"])) for pair in pairs):
+                                errors.append(f"http_request block in {node_id} has invalid {field}")
+                        for field in (http_rule.get("successTargetField", "ok_target_node_id"), http_rule.get("errorTargetField", "error_target_node_id")):
+                            target = block.get(field)
+                            if target is not None and str(target) not in node_ids:
+                                errors.append(f"http_request block in {node_id} has {field} pointing to an unknown node")
                     if block.get(rules["blockTypeField"]) in {"llm", "agent"}:
                         kind = block[rules["blockTypeField"]]
                         model_rule = rules.get("llmModel", {}); model = block.get(model_rule.get("field", "model"))
@@ -265,6 +313,10 @@ class PlatformRuntime:
                         allowed = rules.get("conditional", {}).get("allowedCodeTypes", [])
                         if allowed and block.get("code_type") not in allowed:
                             errors.append(f"single_if block in {node_id} must use code_type one of: {', '.join(allowed)}")
+                        expression = block.get("expression")
+                        for pattern in rules.get("conditional", {}).get("forbiddenExpressionPatterns", []):
+                            if isinstance(expression, str) and re.search(pattern, expression):
+                                errors.append(f"single_if block in {node_id} uses unsupported Python expression syntax; use the platform condition DSL")
             by_id = {str(node[rules["nodeIdField"]]): node for node in nodes if isinstance(node, dict) and node.get(rules["nodeIdField"])}
             reachable: set[str] = set()
             pending = [str(edge.get(target_key)) for edge in edges if isinstance(edge, dict) and str(edge.get(target_key)) in by_id]
@@ -280,6 +332,11 @@ class PlatformRuntime:
                         pending.extend(str(button.get(target_key)) for button in block.get(rules["interactive"]["buttonsField"], []) if isinstance(button, dict) and str(button.get(target_key)) in by_id)
                     if block.get(rules["blockTypeField"]) == "single_if" and str(block.get(target_key)) in by_id:
                         pending.append(str(block[target_key]))
+                    if block.get(rules["blockTypeField"]) == rules.get("httpRequest", {}).get("type", "http_request"):
+                        http_rule = rules.get("httpRequest", {})
+                        for field in (http_rule.get("successTargetField", "ok_target_node_id"), http_rule.get("errorTargetField", "error_target_node_id")):
+                            if str(block.get(field)) in by_id:
+                                pending.append(str(block[field]))
             if unreachable := sorted(node_ids - reachable): errors.append(f"scenario {index} has unreachable nodes: {', '.join(unreachable)}")
         return errors
 

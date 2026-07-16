@@ -25,6 +25,7 @@ turns in the same session; otherwise use independent cases. If verification fail
 draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
 passes.
 When the requested behavior includes a user-facing menu or named buttons, implement those as actual buttons and assert every requested label in the verification plan; text that merely lists choices is insufficient.
+For a stateful verification case, start with the interaction that initializes the fresh session whenever the bot opens with a prompt or menu. Put the subsequent user reply in the next step; do not assume a fresh engine session is already past the opening turn.
 Never invent results or tailor instructions to benchmark examples."""
 
 
@@ -173,7 +174,11 @@ class Agent:
                 tools = [tool for tool in tools if tool["function"]["name"] != "inspect_existing_bot"]
             available_tools = [tool["function"]["name"] for tool in tools]
             for _ in range(self.c.max_turns):
-                response = self.llm_request(messages, tools)
+                # A malformed suite is an argument-shape problem, not a bot
+                # repair.  Giving the model only this tool prevents it from
+                # spending turns editing or republishing an untested draft.
+                turn_tools = [tool for tool in tools if mcp.tool_role(tool["function"]["name"]) == "verification"] if verification_plan_repair_only else tools
+                response = self.llm_request(messages, turn_tools)
                 message = ((response.get("choices") or [{}])[0].get("message") or {}); messages.append(message)
                 calls = message.get("tool_calls") or []
                 if not calls:

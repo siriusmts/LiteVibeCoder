@@ -158,12 +158,56 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertTrue(any("forbidden import" in error for error in result["errors"]))
 
+    def test_rejects_dictionary_style_context_access_in_scripts(self):
+        block = {"id": "script", "type": "script", "value": "async def handler(context: Context) -> None:\n    value = context.get('value')\n    context.session.result = value", "result_variable_name": "result"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("dictionary-style context" in error for error in result["errors"]))
+
     def test_rejects_network_url_in_script_without_network_capability(self):
         block = {"id": "script", "type": "script", "value": "async def handler(context: Context) -> None:\n    endpoint = 'https://service.example/search'\n    context.session['result'] = endpoint", "result_variable_name": "result"}
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}]}]}
         result = self.client.call("save_draft", {"bot": draft})
         self.assertFalse(result["valid"])
         self.assertTrue(any("outbound HTTP" in error for error in result["errors"]))
+
+    def test_accepts_and_validates_native_http_request_routes(self):
+        http = {
+            "id": "lookup", "type": "http_request", "method": "GET",
+            "url": "https://api.example.test/search?q={{system.last_user_message}}",
+            "timeout": 15, "retry_attempts_count": 1,
+            "response_mapping": [{"key": "session.result", "value": "$response.body.items[0].title"}],
+            "ok_target_node_id": "result", "error_target_node_id": "failed",
+        }
+        nodes = [
+            {"id": "start", "name": "Lookup", "blocks": [http]},
+            {"id": "result", "name": "Result", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]},
+            {"id": "failed", "name": "Failure", "blocks": [{"id": "error", "type": "answer", "value": "Service is unavailable"}]},
+        ]
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": nodes}]}
+        self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
+        http["ok_target_node_id"] = "missing"
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("ok_target_node_id" in error for error in result["errors"]))
+
+    def test_rejects_non_platform_templates_and_python_condition_syntax(self):
+        condition = {"id": "route", "type": "single_if", "title": "Route", "expression": "context['session']['found'] is not None and len(context['session']['found']) > 0", "code_type": "python", "target_node_id": "start"}
+        answer = {"id": "answer", "type": "answer", "value": "${session.result}"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [condition, answer]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("template syntax" in error for error in result["errors"]))
+        self.assertTrue(any("condition DSL" in error for error in result["errors"]))
+
+    def test_rejects_invented_blocks_and_block_level_sequential_routes(self):
+        invented = {"id": "menu", "type": "interactive", "buttons": [{"title": "Continue", "target_node_id": "start"}], "next_node_id": "start"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [invented]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("unknown block type" in error for error in result["errors"]))
+        self.assertTrue(any("must not contain next_node_id" in error for error in result["errors"]))
 
     def test_rejects_workflow_llm_without_next_node(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
@@ -400,6 +444,33 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("has both message and steps", result["errors"][0])
         self.assertIn("expectedStatefulCase", result)
+
+    def test_loop_limits_tools_to_verification_after_invalid_plan(self):
+        class FakeMcp:
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self):
+                return [{"type": "function", "function": {"name": name}} for name in ("save_draft", "publish_draft", "verify_published_bot")]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
+            def call(self, name, arguments):
+                if name == "verify_published_bot":
+                    return {"passed": len(calls) > 1} if arguments.get("tests") else {"passed": False, "errors": ["tests must be a non-empty list"]}
+                return {"published": True} if name == "publish_draft" else {"valid": True}
+
+        calls = []
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        replies = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"smoke","message":"hello"}]}'}}]}}]},
+        ])
+        def request(messages, tools):
+            calls.append([tool["function"]["name"] for tool in tools])
+            return next(replies)
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=request):
+            agent.run("Build a bot")
+        self.assertEqual(calls[1], ["verify_published_bot"])
 
     def test_verification_suite_keeps_stateful_steps_in_one_session(self):
         runtime = PlatformRuntime()
