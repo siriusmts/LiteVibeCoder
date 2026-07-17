@@ -90,6 +90,27 @@ def verification_fingerprint(result: dict[str, Any]) -> str:
     return json.dumps(failures, ensure_ascii=False, sort_keys=True)
 
 
+def subagent_failure_fingerprint(result: dict[str, Any]) -> str:
+    """Compare observed QA failures without unstable plan IDs or prose."""
+    packet = result.get("repairPacket") if isinstance(result.get("repairPacket"), dict) else {}
+    turns = packet.get("evidenceTurns") if isinstance(packet.get("evidenceTurns"), list) else []
+    observations = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        errors = turn.get("engineErrors") if isinstance(turn.get("engineErrors"), list) else []
+        buttons = turn.get("buttons") if isinstance(turn.get("buttons"), list) else []
+        observations.append({
+            "sent": str(turn.get("sent", "")).strip().casefold(),
+            "technical": bool(turn.get("technical")),
+            "hasReply": bool(str(turn.get("reply") or "").strip()),
+            "buttons": sorted(str(value).strip().casefold() for value in buttons if isinstance(value, str)),
+            "awaitingUser": bool(turn.get("awaitingUser")),
+            "engineErrors": sorted(json.dumps(error, ensure_ascii=False, sort_keys=True) for error in errors),
+        })
+    return json.dumps(sorted(observations, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True)), ensure_ascii=False, sort_keys=True)
+
+
 def plan_covers_live_dialogue(tests: Any, turns: int) -> bool:
     """Require the final suite to replay a conversation it already explored."""
     if turns < 2 or not isinstance(tests, list):
@@ -178,6 +199,15 @@ class Agent:
         finally:
             mcp.stop()
 
+    def save_qa_artifact(self, run_id: str, version_id: Any, result: dict[str, Any]) -> None:
+        """Persist complete QA evidence separately from compact LLM feedback."""
+        self.c.debug_dir.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        (self.c.debug_dir / "last_qa_verification.json").write_text(text, encoding="utf-8")
+        runs = self.c.debug_dir / "runs"; runs.mkdir(exist_ok=True)
+        suffix = str(version_id or "unknown")
+        (runs / f"{run_id}_qa_verification_{suffix}.json").write_text(text, encoding="utf-8")
+
     def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], timeout_seconds: int | None = None, tool_choice: str | dict[str, Any] | None = None) -> dict[str, Any]:
         payload = {"model": self.c.model, "messages": messages, "tools": tools, "tool_choice": tool_choice or "auto", "temperature": 0.1}
         thinking = os.getenv("LLM_ENABLE_THINKING", "").strip().lower()
@@ -248,7 +278,8 @@ class Agent:
         if not self.c.llm_url or not self.c.llm_key or not self.c.model: raise RuntimeError("COTYPE_BASE_URL, COTYPE_API_KEY, and COTYPE_MODEL are required")
         mcp = MCPClient()
         try:
-            mcp.start(); mcp.configure(self.context())
+            run_context = self.context()
+            mcp.start(); mcp.configure(run_context)
             context = compact_platform_context(mcp.call(mcp.context_tool(), {}))
             is_create = not self.c.existing_bot_id
             use_verification_subagent = os.getenv("MWS_VERIFICATION_MODE", "subagent").strip().lower() != "legacy"
@@ -385,8 +416,12 @@ class Agent:
                             timeout = max(30, int(os.getenv("MWS_VERIFIER_LLM_TIMEOUT", "120")))
                             return self.llm_request(messages, qa_tools, timeout_seconds=timeout)
 
+                        if result.get("frontendUrl"):
+                            print(f"Frontend URL (published, QA pending): {result['frontendUrl']}", flush=True)
                         print(f"QA SUBAGENT: starting independent verification with {self.c.model}", flush=True)
-                        result["subagentVerification"] = VerificationSubagent(qa_llm_request, engine_test).run(prompt)
+                        verification = VerificationSubagent(qa_llm_request, engine_test, method_skill=self.work_style).run(prompt)
+                        result["subagentVerification"] = verification
+                        self.save_qa_artifact(str(run_context["runId"]), result.get("versionId"), verification)
                     if role == "verification" and not result.get("toolError") and not result.get("errors") and not result.get("passed"):
                         result["guidance"] = "Compare every failed assertion with the actual reply. Resubmit only a corrected verification plan when the expectation or session sequence was wrong; repair the draft only when the observed behavior violates the user's requirement."
                     print(f"MCP TOOL: {name}", flush=True)
@@ -491,7 +526,7 @@ class Agent:
                                 return
                             behavior_repair_required = True
                             repair_fetch_required = True
-                            fingerprint = json.dumps(verification.get("issues") or [], ensure_ascii=False, sort_keys=True)
+                            fingerprint = subagent_failure_fingerprint(verification)
                             if fingerprint and fingerprint == last_subagent_failure:
                                 repeated_subagent_failure_count += 1
                             else:

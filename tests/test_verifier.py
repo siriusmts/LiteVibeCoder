@@ -4,9 +4,10 @@ import os
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from mws_agent.loop import Agent, Config
+from mws_agent.loop import Agent, Config, subagent_failure_fingerprint
 from mws_agent.verifier import VerificationSubagent
 
 
@@ -25,6 +26,49 @@ def tool_response(name, arguments, call_id="qa"):
 
 
 class VerificationSubagentTests(unittest.TestCase):
+    def test_agent_persists_complete_qa_evidence_for_manual_debugging(self):
+        with TemporaryDirectory() as directory:
+            agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 1, "Hello", Path(directory), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+            verdict = {"passed": False, "turns": [{"turnId": 1, "sent": "Жизненные", "technical": True}]}
+            agent.save_qa_artifact("run-1", "version-2", verdict)
+
+            self.assertEqual(json.loads((Path(directory) / "last_qa_verification.json").read_text(encoding="utf-8")), verdict)
+            self.assertTrue((Path(directory) / "runs" / "run-1_qa_verification_version-2.json").is_file())
+
+    def test_verifier_rejects_paraphrased_button_click_without_spending_a_live_turn(self):
+        replies = iter([
+            tool_response("qa_set_plan", {"requirements": [{"id": "life", "description": "The Life category returns a joke"}]}),
+            tool_response("qa_send_message", {"message": "start", "requirementIds": ["life"], "purpose": "Open the menu"}),
+            tool_response("qa_send_message", {"message": "Выбираю жизненные анекдоты", "requirementIds": ["life"], "purpose": "Select the category"}),
+            tool_response("qa_send_message", {"message": "Жизненные", "requirementIds": ["life"], "purpose": "Use the exact displayed label"}),
+            tool_response("qa_finish", {
+                "passed": True,
+                "summary": "The exact category button worked.",
+                "checks": [{"requirementId": "life", "passed": True, "evidenceTurnIds": [2], "evidence": "A joke was returned"}],
+                "issues": [],
+            }),
+        ])
+        sent = []
+        first_system = []
+
+        def request(messages, tools):
+            first_system.append(messages[0]["content"])
+            return next(replies)
+
+        def engine(message, session_id):
+            sent.append(message)
+            if session_id is None:
+                return {"tested": True, "sessionId": "s", "reply": "Choose", "buttons": ["Жизненные"], "awaitingUser": True}
+            return {"tested": True, "sessionId": "s", "reply": "A life joke", "buttons": ["Ещё", "Сменить категорию"], "awaitingUser": True}
+
+        verifier = VerificationSubagent(request, engine, method_skill="METHOD SKILL SENTINEL")
+        result = verifier.run("Build a joke bot")
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(sent, ["start", "Жизненные"])
+        self.assertEqual(len(result["turns"]), 2)
+        self.assertIn("METHOD SKILL SENTINEL", first_system[0])
+
     def test_verifier_owns_and_reuses_the_live_session(self):
         replies = iter([
             tool_response("qa_set_plan", {"requirements": [
@@ -67,6 +111,12 @@ class VerificationSubagentTests(unittest.TestCase):
             "issues": [],
         }, plan, 1)
         self.assertEqual(error, "checks must cover every planned requirement exactly once")
+
+    def test_failure_fingerprint_uses_observations_not_unstable_qa_prose(self):
+        evidence = [{"turnId": 2, "sent": "Жизненные", "technical": True, "reply": "", "buttons": [], "awaitingUser": True, "engineErrors": []}]
+        first = {"repairPacket": {"summary": "Russian wording", "issues": [{"requirementId": "life"}], "evidenceTurns": evidence}}
+        second = {"repairPacket": {"summary": "Different English wording", "issues": [{"requirementId": "req_4"}], "evidenceTurns": evidence}}
+        self.assertEqual(subagent_failure_fingerprint(first), subagent_failure_fingerprint(second))
 
     def test_verifier_forces_finish_when_the_live_budget_is_exhausted(self):
         replies = iter([
@@ -176,12 +226,13 @@ class VerificationSubagentTests(unittest.TestCase):
             return next(main_replies)
 
         output = io.StringIO()
-        with patch.dict(os.environ, {"MWS_VERIFICATION_MODE": "subagent"}), patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=request), redirect_stdout(output):
+        with patch.dict(os.environ, {"MWS_VERIFICATION_MODE": "subagent"}), patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=request), patch.object(agent, "save_qa_artifact") as save_artifact, redirect_stdout(output):
             agent.run("Создай бота который всегда отвечает Да")
 
         self.assertTrue(all("test_published_bot" not in names and "verify_published_bot" not in names for names in main_tool_sets))
         self.assertEqual([name for name, _ in fake.calls], ["platform_contract", "publish_draft", "test_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot"])
         self.assertIn("QA SUBAGENT found bot defects", output.getvalue())
+        self.assertIn("Frontend URL (published, QA pending): http://bot/1", output.getvalue())
         self.assertIn("returned text instead of required get_saved_draft", output.getvalue())
         self.assertIn("QA SUBAGENT passed", output.getvalue())
         self.assertIn("Frontend URL: http://bot/2", output.getvalue())
@@ -189,6 +240,9 @@ class VerificationSubagentTests(unittest.TestCase):
         self.assertEqual(main_tool_sets[1], {"get_saved_draft"})
         self.assertEqual(main_tool_sets[2], {"get_saved_draft"})
         self.assertEqual(main_request_options[1].get("tool_choice"), "required")
+        self.assertEqual(save_artifact.call_count, 2)
+        first_verdict = save_artifact.call_args_list[0].args[2]
+        self.assertEqual(first_verdict["repairPacket"]["evidenceTurns"][0]["sent"], "anything")
 
     def test_agent_forces_structural_draft_repair_after_invalid_save(self):
         class FakeMcp:

@@ -15,6 +15,10 @@ Every test message must name the planned requirement IDs it is testing and have 
 Use newSession=true only when starting an independent path. When buttons are shown, exercise the
 relevant labels exactly. Cover the requested success paths, failure branches, state transitions,
 integrations, and buttons without inventing requirements or benchmark-specific expectations.
+Represent every independently selectable named branch as its own planned requirement. Test sibling
+branches both in clean sessions for isolation and in a shared session when the request requires
+switching or continued conversation. Before reporting a technical failure, reproduce the same path
+from a clean session so a contaminated dialogue is not misdiagnosed as a broken bot.
 Do not keep exploring after enough evidence exists: the live-turn budget is finite and the tool
 result tells you how many turns remain. Finally call qa_finish. Cite real turn IDs for every requirement. Pass only when every planned
 requirement was observed and no technical error or requested-behavior mismatch remains. On failure,
@@ -114,9 +118,10 @@ def compact_result(value: dict[str, Any]) -> str:
 
 
 class VerificationSubagent:
-    def __init__(self, llm_request: Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]], engine_test: Callable[[str, str | None], dict[str, Any]]) -> None:
+    def __init__(self, llm_request: Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]], engine_test: Callable[[str, str | None], dict[str, Any]], method_skill: str = "") -> None:
         self.llm_request = llm_request
         self.engine_test = engine_test
+        self.method_skill = method_skill.strip()
         self.max_turns = max(4, int(os.getenv("MWS_VERIFIER_MAX_TURNS", "24")))
         self.max_live_turns = max(2, int(os.getenv("MWS_VERIFIER_MAX_LIVE_TURNS", "12")))
 
@@ -170,7 +175,8 @@ class VerificationSubagent:
         return None
 
     def run(self, user_request: str) -> dict[str, Any]:
-        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "Verify the published bot against this request:\n" + user_request}]
+        system = SYSTEM + ("\n\n# Verification method skill\n" + self.method_skill if self.method_skill else "")
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": "Verify the published bot against this request:\n" + user_request}]
         plan: dict[str, str] = {}
         active_session_id: str | None = None
         observations: list[dict[str, Any]] = []
@@ -224,7 +230,14 @@ class VerificationSubagent:
                     elif not isinstance(purpose, str) or not purpose.strip(): result = {"ok": False, "error": "purpose must be non-empty"}
                     elif not isinstance(requirement_ids, list) or not requirement_ids or any(value not in plan for value in requirement_ids): result = {"ok": False, "error": "requirementIds must contain only planned requirement IDs"}
                     else:
-                        if arguments.get("newSession") is True: active_session_id = None
+                        new_session = arguments.get("newSession") is True
+                        previous = observations[-1] if observations else None
+                        previous_buttons = previous.get("buttons") if isinstance(previous, dict) and previous.get("sessionId") == active_session_id else None
+                        if not new_session and isinstance(previous_buttons, list) and previous_buttons and text.strip() not in previous_buttons:
+                            result = {"ok": False, "error": "the previous bot response displayed buttons; continue with one exact button label or set newSession=true for an independent path", "exactButtonLabels": previous_buttons, "remainingLiveTurns": live_turn_budget - len(observations)}
+                            messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": compact_result(result)})
+                            continue
+                        if new_session: active_session_id = None
                         action = (active_session_id or "<new-session>", text.strip().casefold())
                         action_counts[action] = action_counts.get(action, 0) + 1
                         if action_counts[action] > 2:
@@ -242,7 +255,13 @@ class VerificationSubagent:
                     error = self.validate_finish(arguments, plan, len(observations))
                     if error: result = {"ok": False, "error": error, "plannedRequirementIds": list(plan), "availableTurnIds": list(range(1, len(observations) + 1))}
                     else:
-                        return {"completed": True, "passed": arguments["passed"], "summary": arguments["summary"].strip(), "requirements": plan, "checks": arguments["checks"], "issues": arguments["issues"], "turns": observations}
+                        evidence_ids = {turn_id for issue in arguments["issues"] for turn_id in issue.get("evidenceTurnIds", [])}
+                        repair_packet = {
+                            "summary": arguments["summary"].strip(),
+                            "issues": arguments["issues"],
+                            "evidenceTurns": [turn for turn in observations if turn["turnId"] in evidence_ids],
+                        } if not arguments["passed"] else None
+                        return {"completed": True, "passed": arguments["passed"], "summary": arguments["summary"].strip(), "repairPacket": repair_packet, "requirements": plan, "checks": arguments["checks"], "issues": arguments["issues"], "turns": observations}
                 else:
                     result = {"ok": False, "error": f"unknown QA tool: {name}"}
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": compact_result(result)})
