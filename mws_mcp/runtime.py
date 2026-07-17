@@ -349,6 +349,7 @@ class PlatformRuntime:
 
     def contract(self) -> dict[str, Any]:
         return {
+            "instructions": self.platform.instructions,
             "mode": "update" if self.context.get("existingBotId") else "create",
             "dryRun": bool(self.context.get("dryRun")),
             "updatePrecondition": "A successful inspect_existing_bot call is required before publishing an update.",

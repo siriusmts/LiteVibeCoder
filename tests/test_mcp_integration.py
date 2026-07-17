@@ -30,7 +30,9 @@ class McpIntegrationTests(unittest.TestCase):
     def test_discovers_tools_from_mcp_server(self):
         names = {tool["name"] for tool in self.client.tools}
         self.assertTrue({"platform_contract", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"}.issubset(names))
-        self.assertIn("payload", self.client.call(self.client.context_tool(), {}))
+        context = self.client.call(self.client.context_tool(), {})
+        self.assertIn("payload", context)
+        self.assertIn("# MWS no-code platform", context["instructions"])
 
     def test_configuration_status_never_returns_llm_credentials(self):
         config = Config("http://platform.test", "http://frontend.test", "", "", "", "http://llm.test", "secret-value", "model", True, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
@@ -44,10 +46,30 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertIn("raw response omitted", result)
 
     def test_platform_context_omits_transport_details_but_keeps_execution_contract(self):
-        context = {"mode": "create", "payload": {"typeValue": "bots"}, "routes": {"import": "/secret-route"}, "validation": {"blockTypes": ["answer"], "flow": {"nextNodeField": "next_node_id"}, "ignored": "x"}, "contract": {"graph": "graph"}}
+        context = {"instructions": "PLATFORM SKILL SENTINEL", "mode": "create", "payload": {"typeValue": "bots"}, "routes": {"import": "/secret-route"}, "validation": {"blockTypes": ["answer"], "flow": {"nextNodeField": "next_node_id"}, "ignored": "x"}, "contract": {"graph": "graph"}}
         compact = compact_platform_context(context)
         self.assertNotIn("routes", compact)
+        self.assertEqual(compact["instructions"], "PLATFORM SKILL SENTINEL")
         self.assertEqual(compact["validation"], {"blockTypes": ["answer"], "flow": {"nextNodeField": "next_node_id"}})
+
+    def test_platform_skill_text_reaches_the_first_system_message(self):
+        class FakeMcp:
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self): return [{"type": "function", "function": {"name": "verify_published_bot"}}]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else "context"
+            def call(self, name, arguments):
+                if name == "platform_contract": return {"instructions": "PLATFORM SKILL SENTINEL", "validation": {}}
+                return {"passed": True}
+
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 1, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        def request(messages, tools):
+            self.assertIn("PLATFORM SKILL SENTINEL", messages[0]["content"])
+            return {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]}
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=request):
+            agent.run("Build a bot")
 
     def test_loop_does_not_repeat_full_draft_in_llm_history(self):
         class FakeMcp:
