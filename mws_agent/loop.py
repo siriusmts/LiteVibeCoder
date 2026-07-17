@@ -279,6 +279,8 @@ class Agent:
             repeated_failure_count = 0
             last_subagent_failure = ""
             repeated_subagent_failure_count = 0
+            last_draft_failure = ""
+            repeated_draft_failure_count = 0
             no_tool_response_count = 0
             pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
@@ -428,11 +430,24 @@ class Agent:
                                 print("Published behavior did not meet verification assertions; use only requirements from the user, then repair the draft if the actual behavior is wrong.", flush=True)
                             else:
                                 print("Published behavior failed verification; model must repair the draft and publish a new version.", flush=True)
-                    if name == "save_draft" and result.get("valid"):
-                        repair_save_required = False
-                        if behavior_repair_required:
-                            behavior_repair_required = False
-                            repair_publish_only = True
+                    if name == "save_draft":
+                        if result.get("valid"):
+                            repair_save_required = False
+                            last_draft_failure = ""
+                            repeated_draft_failure_count = 0
+                            if behavior_repair_required:
+                                behavior_repair_required = False
+                                repair_publish_only = True
+                        elif result.get("errors"):
+                            repair_save_required = True
+                            failure = json.dumps(result["errors"], ensure_ascii=False, sort_keys=True)
+                            if failure == last_draft_failure:
+                                repeated_draft_failure_count += 1
+                            else:
+                                last_draft_failure = failure
+                                repeated_draft_failure_count = 1
+                            if repeated_draft_failure_count >= 3:
+                                raise RuntimeError("the same structural draft errors repeated three times; stopping instead of resubmitting an ineffective repair")
                     if name == "get_saved_draft" and result.get("available"):
                         repair_fetch_required = False
                         repair_save_required = True

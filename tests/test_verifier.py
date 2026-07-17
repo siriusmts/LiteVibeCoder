@@ -190,6 +190,54 @@ class VerificationSubagentTests(unittest.TestCase):
         self.assertEqual(main_tool_sets[2], {"get_saved_draft"})
         self.assertEqual(main_request_options[1].get("tool_choice"), "required")
 
+    def test_agent_forces_structural_draft_repair_after_invalid_save(self):
+        class FakeMcp:
+            def __init__(self):
+                self.calls = []
+                self.save_calls = 0
+
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self):
+                return [{"type": "function", "function": {"name": name}} for name in ("save_draft", "publish_draft")]
+            def tool_role(self, name): return "publication" if name == "publish_draft" else None
+            def call(self, name, arguments):
+                self.calls.append(name)
+                if name == "platform_contract": return {}
+                if name == "save_draft":
+                    self.save_calls += 1
+                    if self.save_calls == 1:
+                        return {"saved": False, "valid": False, "errors": ["workflow processing node generate needs next_node_id to an existing result node"], "repairDraft": {"name": "draft"}}
+                    return {"saved": True, "valid": True, "errors": []}
+                if name == "publish_draft": return {"dryRun": True}
+                raise AssertionError(name)
+
+        fake = FakeMcp()
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "cotype_pro_3", True, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        replies = iter([
+            tool_response("save_draft", {"bot": {"name": "invalid"}}, "main-1"),
+            {"choices": [{"message": {"role": "assistant", "content": "I will repair it."}}]},
+            tool_response("save_draft", {"bot": {"name": "repaired"}}, "main-2"),
+            tool_response("publish_draft", {}, "main-3"),
+        ])
+        requests = []
+
+        def request(messages, tools, **kwargs):
+            requests.append(([tool["function"]["name"] for tool in tools], kwargs))
+            return next(replies)
+
+        output = io.StringIO()
+        with patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=request), redirect_stdout(output):
+            agent.run("Build a branching bot")
+
+        self.assertEqual(fake.calls, ["platform_contract", "save_draft", "save_draft", "publish_draft"])
+        self.assertEqual(requests[1][0], ["save_draft"])
+        self.assertEqual(requests[2][0], ["save_draft"])
+        self.assertEqual(requests[1][1].get("tool_choice"), "required")
+        self.assertIn("returned text instead of required save_draft", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

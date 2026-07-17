@@ -24,7 +24,7 @@
     "templates": {"open": "{{", "close": "}}", "forbiddenDollarPrefix": "${", "forbiddenContextReferencePattern": "\\{\\{\\s*context(?:\\.|\\[)"},
     "conditional": {"allowedCodeTypes": ["python", "custom"], "forbiddenExpressionPatterns": ["\\bcontext(?:\\s*\\[|\\.)", "\\blen\\s*\\(", "\\bis\\s+not\\s+None\\b", "\\bis\\s+not\\s+empty\\b", "\\bNone\\b"]},
     "script": {"requiredPattern": "async\\s+def\\s+handler\\s*\\(context\\s*:\\s*Context\\)", "forbiddenPattern": "(?m)^\\s*(import|from)\\s+|\\b__import__\\s*\\(|\\bimportlib\\b", "forbiddenContextPatterns": ["\\bcontext\\.get\\s*\\(", "\\bcontext\\s*\\[", "\\bcontext\\.(?:session|system|temp|memory)\\.get\\s*\\(", "\\bcontext\\.(?:session|system|temp|memory)\\s*\\["], "networkAccess": false, "forbiddenNetworkPattern": "https?://"},
-    "flow": {"nextNodeField": "next_node_id", "requiresNextFor": ["llm", "agent", "script"], "disallowBlockNextNode": true, "repairSequentialWorkflow": true},
+    "flow": {"nextNodeField": "next_node_id", "requiresNextFor": ["llm", "agent", "script"], "disallowBlockNextNode": true},
     "llmModel": {"field": "model", "requiredFields": ["url", "token", "model_name"], "placeholderPattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}", "envAliases": {"LLM_URL": "COTYPE_BASE_URL", "LLM_TOKEN": "COTYPE_API_KEY", "LLM_TOKEN_KATALSHOV": "COTYPE_API_KEY", "LLM_MODEL": "COTYPE_MODEL_NAME", "LLM_MODEL_NAME": "COTYPE_MODEL_NAME"}}
   },
   "normalization": {

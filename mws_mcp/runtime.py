@@ -120,15 +120,7 @@ class PlatformRuntime:
                         if edge.get(alias): edge[target] = edge[alias]; break
                 if edge.get(aliases["eventAlias"]):
                     edge.setdefault(aliases["typeField"], aliases["eventType"]); edge.setdefault(aliases["valueField"], edge[aliases["eventAlias"]])
-            flow = rules.get("flow", {}); nodes = scenario.get(rules["nodesField"], [])
-            if flow.get("repairSequentialWorkflow") and isinstance(nodes, list):
-                for index, node in enumerate(nodes[:-1]):
-                    if not isinstance(node, dict) or node.get(flow["nextNodeField"]): continue
-                    blocks = node.get(rules["blocksField"], [])
-                    types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
-                    if any(kind in flow.get("requiresNextFor", []) for kind in types):
-                        next_node = nodes[index + 1]
-                        if isinstance(next_node, dict) and next_node.get(rules["nodeIdField"]): node[flow["nextNodeField"]] = next_node[rules["nodeIdField"]]
+            nodes = scenario.get(rules["nodesField"], [])
             for node in nodes if isinstance(nodes, list) else []:
                 for block in node.get(rules["blocksField"], []) if isinstance(node, dict) else []:
                     if not isinstance(block, dict) or block.get(rules["blockTypeField"]) not in {"llm", "agent"}: continue
@@ -225,7 +217,7 @@ class PlatformRuntime:
                 block_types = {block.get(rules["blockTypeField"]) for block in blocks if isinstance(block, dict)}
                 if any(kind in rules.get("flow", {}).get("requiresNextFor", []) for kind in block_types):
                     next_id = node.get(rules["flow"]["nextNodeField"])
-                    if next_id is None or str(next_id) not in node_ids: errors.append(f"workflow node {node_id} needs next_node_id to an existing node")
+                    if next_id is None or str(next_id) not in node_ids: errors.append(f"workflow processing node {node_id} needs next_node_id to an existing result node; do not infer routing from node array order")
                 def has_dollar_template(value: Any) -> bool:
                     marker = rules.get("templates", {}).get("forbiddenDollarPrefix", "${")
                     if isinstance(value, str):

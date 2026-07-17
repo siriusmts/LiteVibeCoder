@@ -133,7 +133,7 @@ class McpIntegrationTests(unittest.TestCase):
 
     def test_eva_proxy_url_is_not_written_into_platform_model_config(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
-        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block], "next_node_id": "finish"}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
         with patch.dict(os.environ, {"COTYPE_GENERATION_BASE_URL": "http://127.0.0.1:9876/v1", "COTYPE_BASE_URL": "https://payload.example/v1", "COTYPE_API_KEY": "key", "COTYPE_MODEL_NAME": "model"}, clear=False):
             materialized = PlatformRuntime().materialize_model_env(draft)
         self.assertEqual(materialized["scenarios"][0]["nodes"][0]["blocks"][0]["model"]["url"], "https://payload.example/v1")
@@ -189,12 +189,12 @@ class McpIntegrationTests(unittest.TestCase):
 
     def test_accepts_task_selected_model_placeholders(self):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
-        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block], "next_node_id": "finish"}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
         self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
 
     def test_validates_agent_mcp_configuration(self):
         block = {"id": "agent", "type": "agent", "system_message": "Use MCP", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}, "tools": {"mcp_servers": [{"url": "https://example.test/mcp"}]}}
-        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]}]}]}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block], "next_node_id": "finish"}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "{{session.result}}"}]}]}]}
         self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
 
     def test_rejects_script_without_platform_handler(self):
@@ -285,7 +285,31 @@ class McpIntegrationTests(unittest.TestCase):
         block = {"id": "llm", "type": "llm", "system_message": "Classify", "user_message": "{{message}}", "result_variable_name": "result", "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [block]}, {"id": "finish", "name": "Finish", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]}]}]}
         result = self.client.call("save_draft", {"bot": draft})
-        self.assertTrue(result["valid"])
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("processing node start" in error and "result node" in error for error in result["errors"]))
+        self.assertNotIn("next_node_id", result["repairDraft"]["scenarios"][0]["nodes"][0])
+
+        draft["scenarios"][0]["nodes"][0]["next_node_id"] = "finish"
+        self.assertTrue(self.client.call("save_draft", {"bot": draft})["valid"])
+
+    def test_does_not_infer_routes_between_independent_llm_branches(self):
+        def llm_block(block_id, result_name):
+            return {"id": block_id, "type": "llm", "system_message": "Generate", "user_message": "Generate a value", "result_variable_name": result_name, "model": {"url": "${LLM_URL}", "token": "${LLM_TOKEN}", "model_name": "${LLM_MODEL}"}}
+
+        nodes = [
+            {"id": "start", "name": "First branch", "blocks": [llm_block("first_llm", "first_result")]},
+            {"id": "second", "name": "Second branch", "blocks": [llm_block("second_llm", "second_result")]},
+            {"id": "finish", "name": "Result", "blocks": [{"id": "answer", "type": "answer", "value": "Done"}]},
+        ]
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": nodes}]}
+        result = self.client.call("save_draft", {"bot": draft})
+
+        self.assertFalse(result["valid"])
+        workflow_errors = [error for error in result["errors"] if "workflow processing node" in error]
+        self.assertEqual(len(workflow_errors), 2)
+        repaired_nodes = result["repairDraft"]["scenarios"][0]["nodes"]
+        self.assertNotIn("next_node_id", repaired_nodes[0])
+        self.assertNotIn("next_node_id", repaired_nodes[1])
 
     def test_rejects_conditional_route_without_existing_target(self):
         block = {"id": "if", "type": "single_if", "title": "Route", "expression": "flag == True", "code_type": "python", "target_node_id": "missing"}
