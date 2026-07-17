@@ -12,21 +12,15 @@ from typing import Any
 
 from .mcp_client import MCPClient
 from .skills import read_skill
+from .verifier import VerificationSubagent
 
 
-SYSTEM = """You are a careful tool-calling builder. Use only the tools discovered from the
+SYSTEM = """You are a careful tool-calling chatbot builder. Use only tools discovered from the
 attached MCP server. Follow the work-style and platform context provided to you. Inspect before an
-edit, save a complete draft, validate it, and publish only a valid draft. After publication, derive
-a coverage-driven verification suite from the user's requested behavior and run the MCP tool marked
-as verification. Decide the number of cases from the distinct observable requirements, branches,
-integrations, and safety behavior in the task; do not use a fixed count. Give every case a concise
-name that states the covered path. Use ordered steps in one case when a behavior depends on prior
-turns in the same session; otherwise use independent cases. If verification fails, inspect its factual feedback, repair the
-draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
-passes.
-When the requested behavior includes a user-facing menu or named buttons, implement those as actual buttons and assert every requested label in the verification plan; text that merely lists choices is insufficient.
-Before submitting the final verification suite, explore the published bot as a real conversation with test_published_bot. Its first result supplies a sessionId; reuse that same sessionId for the next turn, read the reply/buttons/commands, and choose the next user action from what the bot actually showed. If a response has awaitingUser:true, continue that session. If it exposes buttons, use one of those exact labels as the next choice unless it exposes a command that says otherwise. Reproduce the observed multi-turn conversation as a stateful final verification case, with an observable assertion on every step. A technical engine error is evidence for a repair, not a failed content assertion. For a stateful verification case, start with the interaction that initializes the fresh session whenever the bot opens with a prompt or menu. Put the subsequent user reply in the next step; do not assume a fresh engine session is already past the opening turn.
-Never invent results or tailor instructions to benchmark examples."""
+update, save a complete draft, validate it, and publish only a valid draft. When the requested
+behavior includes a user-facing menu or named buttons, implement actual buttons; text that merely
+lists choices is insufficient. Never invent results or tailor the implementation to benchmark
+examples."""
 
 
 def compact_tool_result(result: Any) -> str:
@@ -256,11 +250,16 @@ class Agent:
             mcp.start(); mcp.configure(self.context())
             context = compact_platform_context(mcp.call(mcp.context_tool(), {}))
             is_create = not self.c.existing_bot_id
+            use_verification_subagent = os.getenv("MWS_VERIFICATION_MODE", "subagent").strip().lower() != "legacy"
             mode_rules = (
                 "This is a CREATE run. Do not call inspect_existing_bot: no bot is selected and it is not useful."
                 if is_create else
                 "This is an UPDATE run. Call inspect_existing_bot successfully before publishing."
-            ) + " A malformed verification plan is not a bot failure: correct and resubmit only verify_published_bot. If a valid verification plan reports failed behavior, inspect the live conversation and its engineErrors, then call get_saved_draft, save a repaired draft, publish it, and verify it again."
+            )
+            if use_verification_subagent:
+                mode_rules += " After every successful publication, the runtime starts an independent black-box QA subagent using the same configured model. Do not test the bot yourself. If publication feedback contains subagentVerification issues, inspect their real dialogue evidence, call get_saved_draft, save a targeted complete repair, and publish again. Completion is automatic only after the QA subagent passes every requested behavior."
+            else:
+                mode_rules += " A malformed verification plan is not a bot failure: correct and resubmit only verify_published_bot. If a valid verification plan reports failed behavior, inspect the live conversation and its engineErrors, then call get_saved_draft, save a repaired draft, publish it, and verify it again."
             system = SYSTEM + f"\n\n# Execution rules\n{mode_rules}\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
@@ -275,11 +274,15 @@ class Agent:
             diagnostic_test_required = False
             last_failure = ""
             repeated_failure_count = 0
+            last_subagent_failure = ""
+            repeated_subagent_failure_count = 0
             pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             tools = mcp.openai_tools()
             if is_create:
                 tools = [tool for tool in tools if tool["function"]["name"] != "inspect_existing_bot"]
+            if use_verification_subagent:
+                tools = [tool for tool in tools if tool["function"]["name"] not in {"test_published_bot", "verify_published_bot"}]
             available_tools = [tool["function"]["name"] for tool in tools]
             for _ in range(self.c.max_turns):
                 # A malformed suite is an argument-shape problem, not a bot
@@ -296,6 +299,7 @@ class Agent:
                 for call in calls:
                     function = call.get("function") or {}; name = str(function.get("name", ""))
                     role = mcp.tool_role(name)
+                    required_live_call = name == "test_published_bot" and live_test_required
                     try:
                         arguments = json.loads(function.get("arguments") or "{}")
                         if not isinstance(arguments, dict):
@@ -313,11 +317,9 @@ class Agent:
                         elif role == "verification" and not plan_covers_live_dialogue(arguments.get("tests"), live_turns):
                             result = {"ok": False, "toolError": f"The live exploration used {live_turns} turns in one session. The final verification plan must include a stateful case with at least {live_turns} ordered steps that replays that observed dialogue.", "availableTools": available_tools}
                         elif name == "test_published_bot" and live_test_required and live_session_id:
-                            supplied_session = str(arguments.get("sessionId", ""))
                             supplied_message = arguments.get("message")
-                            if supplied_session != live_session_id:
-                                result = {"ok": False, "toolError": "Continue the required live conversation with the sessionId returned by the preceding test_published_bot call.", "availableTools": available_tools}
-                            elif required_button_titles and supplied_message not in required_button_titles:
+                            arguments["sessionId"] = live_session_id
+                            if required_button_titles and supplied_message not in required_button_titles:
                                 result = {"ok": False, "toolError": "The previous live response displayed buttons. Continue by sending one of its exact button labels as the next message.", "availableTools": available_tools}
                             else:
                                 result = mcp.call(name, arguments)
@@ -337,6 +339,17 @@ class Agent:
                                 # select a discovered tool or repair its arguments on the next turn.
                                 result = {"ok": False, "toolError": str(error), "availableTools": available_tools}
                                 print(f"MCP TOOL failed: {name}: {error}", flush=True)
+                    if use_verification_subagent and role == "publication" and result.get("published"):
+                        def engine_test(message: str, session_id: str | None) -> dict[str, Any]:
+                            test_arguments: dict[str, Any] = {"message": message}
+                            if session_id:
+                                test_arguments["sessionId"] = session_id
+                            return mcp.call("test_published_bot", test_arguments)
+
+                        print(f"QA SUBAGENT: starting independent verification with {self.c.model}", flush=True)
+                        result["subagentVerification"] = VerificationSubagent(self.llm_request, engine_test).run(prompt)
+                    if role == "verification" and not result.get("toolError") and not result.get("errors") and not result.get("passed"):
+                        result["guidance"] = "Compare every failed assertion with the actual reply. Resubmit only a corrected verification plan when the expectation or session sequence was wrong; repair the draft only when the observed behavior violates the user's requirement."
                     print(f"MCP TOOL: {name}", flush=True)
                     if result.get("toolError"):
                         print(f"MCP TOOL rejected: {result['toolError']}", flush=True)
@@ -383,6 +396,8 @@ class Agent:
                             behavior_repair_required = False
                             repair_publish_only = True
                     if name == "test_published_bot" and result.get("tested"):
+                        diagnostic_test_required = False
+                    if name == "test_published_bot" and result.get("tested") and required_live_call:
                         session_id = str(result.get("sessionId", ""))
                         if not live_session_id:
                             live_session_id = session_id
@@ -399,18 +414,39 @@ class Agent:
                             live_test_required = True
                         else:
                             live_test_required = False
-                        diagnostic_test_required = False
                     if role == "publication" and result.get("published"):
-                        publication_needs_verification = True
                         repair_publish_only = False
-                        live_test_required = True
-                        live_session_id = ""
-                        live_turns = 0
-                        required_button_titles = []
                         smoke = result.get("test") or {}
                         if smoke.get("reply"):
                             print(f"SMOKE TEST reply: {str(smoke['reply'])[:500]}", flush=True)
                         print("SMOKE TEST passed." if smoke.get("tested") else "SMOKE TEST failed; the verification suite will provide repair feedback.", flush=True)
+                        if use_verification_subagent:
+                            publication_needs_verification = False
+                            verification = result.get("subagentVerification") or {}
+                            if not verification.get("completed"):
+                                raise RuntimeError(f"QA subagent could not complete verification: {verification.get('verifierError', 'unknown verifier failure')}")
+                            if verification.get("passed"):
+                                verified = True
+                                if pending_frontend_url:
+                                    print(f"Frontend URL: {pending_frontend_url}", flush=True)
+                                print(f"QA SUBAGENT passed: {verification.get('summary', 'all requested behavior was observed')}", flush=True)
+                                return
+                            behavior_repair_required = True
+                            fingerprint = json.dumps(verification.get("issues") or [], ensure_ascii=False, sort_keys=True)
+                            if fingerprint and fingerprint == last_subagent_failure:
+                                repeated_subagent_failure_count += 1
+                            else:
+                                last_subagent_failure = fingerprint
+                                repeated_subagent_failure_count = 1
+                            if repeated_subagent_failure_count >= 3:
+                                raise RuntimeError("the independent QA subagent observed the same failure after two repairs; stopping instead of repeating an ineffective publication loop")
+                            print(f"QA SUBAGENT found bot defects: {verification.get('summary', 'see structured issues in tool feedback')}", flush=True)
+                        else:
+                            publication_needs_verification = True
+                            live_test_required = True
+                            live_session_id = ""
+                            live_turns = 0
+                            required_button_titles = []
                     if result.get("dryRun") and role == "publication":
                         print("Dry-run completed.", flush=True)
                         return

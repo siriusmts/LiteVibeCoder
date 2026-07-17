@@ -22,10 +22,16 @@ VALID_BOT = {
 
 class McpIntegrationTests(unittest.TestCase):
     def setUp(self):
+        # These tests exercise the retained legacy inline-verification state
+        # machine.  The production default is covered separately by the
+        # independent verification-subagent tests.
+        self.verification_mode = patch.dict(os.environ, {"MWS_VERIFICATION_MODE": "legacy"})
+        self.verification_mode.start()
         self.client = MCPClient(); self.client.start(); self.client.configure({"dryRun": True, "testMessage": "Hello"})
 
     def tearDown(self):
         self.client.stop()
+        self.verification_mode.stop()
 
     def test_discovers_tools_from_mcp_server(self):
         names = {tool["name"] for tool in self.client.tools}
@@ -585,7 +591,7 @@ class McpIntegrationTests(unittest.TestCase):
 
     def test_loop_continues_an_interactive_live_session_before_verification(self):
         class FakeMcp:
-            def __init__(self): self.live_calls = 0
+            def __init__(self): self.live_calls = 0; self.supplied_sessions = []
             def start(self): pass
             def stop(self): pass
             def configure(self, context): return {}
@@ -598,6 +604,7 @@ class McpIntegrationTests(unittest.TestCase):
                 if name == "publish_draft": return {"published": True}
                 if name == "test_published_bot":
                     self.live_calls += 1
+                    self.supplied_sessions.append(arguments.get("sessionId"))
                     return {"tested": True, "sessionId": "session-1", "reply": "Continue", "awaitingUser": self.live_calls == 1}
                 return {"passed": True}
 
@@ -607,12 +614,46 @@ class McpIntegrationTests(unittest.TestCase):
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "test_published_bot", "arguments": '{"message":"open"}'}}]}}]},
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"premature","message":"hello"}]}'}}]}}]},
-            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "test_published_bot", "arguments": '{"message":"next","sessionId":"session-1"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "test_published_bot", "arguments": '{"message":"next"}'}}]}}]},
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "5", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"checked","steps":[{"message":"open","expectContains":["Continue"]},{"message":"next","expectContains":["Continue"]}]}]}'}}]}}]},
         ])
         with patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=lambda messages, tools: next(replies)):
             agent.run("Build a bot")
         self.assertEqual(fake.live_calls, 2)
+        self.assertEqual(fake.supplied_sessions, [None, "session-1"])
+
+    def test_optional_exploration_does_not_expand_required_verification_length(self):
+        class FakeMcp:
+            def __init__(self): self.live_calls = 0; self.supplied_sessions = []
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self):
+                return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "test_published_bot", "verify_published_bot")]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
+            def call(self, name, arguments):
+                if name == "platform_contract": return {}
+                if name == "publish_draft": return {"published": True}
+                if name == "test_published_bot":
+                    self.live_calls += 1
+                    self.supplied_sessions.append(arguments.get("sessionId"))
+                    session_id = "session-1" if self.live_calls < 3 else "optional-session"
+                    return {"tested": True, "sessionId": session_id, "reply": "Observed", "awaitingUser": self.live_calls == 1}
+                return {"passed": True}
+
+        fake = FakeMcp()
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 5, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        replies = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "test_published_bot", "arguments": '{"message":"open"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "test_published_bot", "arguments": '{"message":"next"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "test_published_bot", "arguments": '{"message":"optional"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "5", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"required path","steps":[{"message":"open","expectContains":["Observed"]},{"message":"next","expectContains":["Observed"]}]}]}'}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=lambda messages, tools: next(replies)):
+            agent.run("Build a bot")
+        self.assertEqual(fake.supplied_sessions, [None, "session-1", None])
 
     def test_verification_suite_keeps_stateful_steps_in_one_session(self):
         runtime = PlatformRuntime()

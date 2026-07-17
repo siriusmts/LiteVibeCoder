@@ -475,7 +475,7 @@ class PlatformRuntime:
 
     def verify(self, tests: Any) -> dict[str, Any]:
         if not isinstance(tests, list) or not tests:
-            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"], "expectedCase": {"name": "concise case name", "steps": [{"message": "first user message"}]}}
+            return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"], "expectedCase": {"name": "concise case name", "message": "one independent user message", "expectContains": ["observable text required by the user"]}}
         def valid_step(step: Any) -> bool:
             return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
 
@@ -503,8 +503,8 @@ class PlatformRuntime:
                 "terminal": False,
                 "passed": False,
                 "errors": invalid,
-                "expectedCase": {"name": "concise case name", "message": "one independent user message"},
-                "expectedStatefulCase": {"name": "stateful path", "steps": [{"message": "first user message"}, {"message": "next user message"}]},
+                "expectedCase": {"name": "concise case name", "message": "one independent user message", "expectContains": ["observable text required by the user"]},
+                "expectedStatefulCase": {"name": "stateful path", "steps": [{"message": "first user message", "expectContains": ["observable first reply"]}, {"message": "next user message", "expectContains": ["observable next reply"]}]},
             }
         results = []
         for case in tests:
