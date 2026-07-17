@@ -31,8 +31,8 @@ class VerificationSubagentTests(unittest.TestCase):
                 {"id": "welcome", "description": "Greets and asks for a dish"},
                 {"id": "recipe", "description": "Shows a recipe and restart button"},
             ]}),
-            tool_response("qa_send_message", {"message": "start"}),
-            tool_response("qa_send_message", {"message": "Chicken"}),
+            tool_response("qa_send_message", {"message": "start", "requirementIds": ["welcome"], "purpose": "Open a fresh conversation"}),
+            tool_response("qa_send_message", {"message": "Chicken", "requirementIds": ["recipe"], "purpose": "Exercise successful lookup"}),
             tool_response("qa_finish", {
                 "passed": True,
                 "summary": "Both requested paths were observed.",
@@ -67,6 +67,32 @@ class VerificationSubagentTests(unittest.TestCase):
             "issues": [],
         }, plan, 1)
         self.assertEqual(error, "checks must cover every planned requirement exactly once")
+
+    def test_verifier_forces_finish_when_the_live_budget_is_exhausted(self):
+        replies = iter([
+            tool_response("qa_set_plan", {"requirements": [{"id": "reply", "description": "Returns a visible reply"}]}),
+            tool_response("qa_send_message", {"message": "one", "requirementIds": ["reply"], "purpose": "First observation"}),
+            tool_response("qa_send_message", {"message": "two", "requirementIds": ["reply"], "purpose": "Second observation"}),
+            tool_response("qa_send_message", {"message": "three", "requirementIds": ["reply"], "purpose": "Final observation"}),
+            tool_response("qa_finish", {
+                "passed": True,
+                "summary": "The requested reply was observed.",
+                "checks": [{"requirementId": "reply", "passed": True, "evidenceTurnIds": [1], "evidence": "Visible reply"}],
+                "issues": [],
+            }),
+        ])
+        offered_tools = []
+
+        def request(messages, tools):
+            offered_tools.append([tool["function"]["name"] for tool in tools])
+            return next(replies)
+
+        verifier = VerificationSubagent(request, lambda message, session_id: {"tested": True, "sessionId": "s", "reply": message})
+        result = verifier.run("Build an echo bot")
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(len(result["turns"]), 3)
+        self.assertEqual(offered_tools[-1], ["qa_finish"])
 
     def test_agent_repairs_from_subagent_feedback_then_stops_on_pass(self):
         class FakeMcp:
@@ -110,7 +136,7 @@ class VerificationSubagentTests(unittest.TestCase):
         qa_runs = iter([
             iter([
                 tool_response("qa_set_plan", {"requirements": [{"id": "always_yes", "description": "Always answers Да"}]}),
-                tool_response("qa_send_message", {"message": "anything"}),
+                tool_response("qa_send_message", {"message": "anything", "requirementIds": ["always_yes"], "purpose": "Check an arbitrary input"}),
                 tool_response("qa_finish", {
                     "passed": False, "summary": "The bot answered Нет.",
                     "checks": [{"requirementId": "always_yes", "passed": False, "evidenceTurnIds": [1], "evidence": "Reply was Нет"}],
@@ -119,7 +145,7 @@ class VerificationSubagentTests(unittest.TestCase):
             ]),
             iter([
                 tool_response("qa_set_plan", {"requirements": [{"id": "always_yes", "description": "Always answers Да"}]}),
-                tool_response("qa_send_message", {"message": "anything"}),
+                tool_response("qa_send_message", {"message": "anything", "requirementIds": ["always_yes"], "purpose": "Check an arbitrary input"}),
                 tool_response("qa_finish", {
                     "passed": True, "summary": "The repaired bot answers Да.",
                     "checks": [{"requirementId": "always_yes", "passed": True, "evidenceTurnIds": [1], "evidence": "Reply was Да"}],
@@ -129,11 +155,13 @@ class VerificationSubagentTests(unittest.TestCase):
         ])
         current_qa = None
         main_tool_sets = []
+        qa_timeouts = []
 
-        def request(messages, tools):
+        def request(messages, tools, **kwargs):
             nonlocal current_qa
             names = {tool["function"]["name"] for tool in tools}
-            if "qa_set_plan" in names:
+            if any(name.startswith("qa_") for name in names):
+                qa_timeouts.append(kwargs.get("timeout_seconds"))
                 if current_qa is None:
                     current_qa = next(qa_runs)
                 try:
@@ -153,6 +181,7 @@ class VerificationSubagentTests(unittest.TestCase):
         self.assertIn("QA SUBAGENT found bot defects", output.getvalue())
         self.assertIn("QA SUBAGENT passed", output.getvalue())
         self.assertIn("Frontend URL: http://bot/2", output.getvalue())
+        self.assertTrue(qa_timeouts and all(value == 120 for value in qa_timeouts))
 
 
 if __name__ == "__main__":

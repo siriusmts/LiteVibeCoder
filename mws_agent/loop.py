@@ -178,7 +178,7 @@ class Agent:
         finally:
             mcp.stop()
 
-    def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], timeout_seconds: int | None = None) -> dict[str, Any]:
         payload = {"model": self.c.model, "messages": messages, "tools": tools, "tool_choice": "auto", "temperature": 0.1}
         thinking = os.getenv("LLM_ENABLE_THINKING", "").strip().lower()
         if thinking in {"true", "false"}:
@@ -197,7 +197,8 @@ class Agent:
                 # A full tool contract plus a multi-node graph can take longer
                 # than a short chat response, especially on shared model pools.
                 # Operators can still lower this with COTYPE_TIMEOUT.
-                with urllib.request.urlopen(request, timeout=int(os.getenv("COTYPE_TIMEOUT", "600"))) as response:
+                request_timeout = timeout_seconds if timeout_seconds is not None else int(os.getenv("COTYPE_TIMEOUT", "600"))
+                with urllib.request.urlopen(request, timeout=request_timeout) as response:
                     if streaming:
                         return self.read_streaming_response(response)
                     return json.loads(response.read().decode("utf-8", "replace"))
@@ -346,8 +347,12 @@ class Agent:
                                 test_arguments["sessionId"] = session_id
                             return mcp.call("test_published_bot", test_arguments)
 
+                        def qa_llm_request(messages: list[dict[str, Any]], qa_tools: list[dict[str, Any]]) -> dict[str, Any]:
+                            timeout = max(30, int(os.getenv("MWS_VERIFIER_LLM_TIMEOUT", "120")))
+                            return self.llm_request(messages, qa_tools, timeout_seconds=timeout)
+
                         print(f"QA SUBAGENT: starting independent verification with {self.c.model}", flush=True)
-                        result["subagentVerification"] = VerificationSubagent(self.llm_request, engine_test).run(prompt)
+                        result["subagentVerification"] = VerificationSubagent(qa_llm_request, engine_test).run(prompt)
                     if role == "verification" and not result.get("toolError") and not result.get("errors") and not result.get("passed"):
                         result["guidance"] = "Compare every failed assertion with the actual reply. Resubmit only a corrected verification plan when the expectation or session sequence was wrong; repair the draft only when the observed behavior violates the user's requirement."
                     print(f"MCP TOOL: {name}", flush=True)
