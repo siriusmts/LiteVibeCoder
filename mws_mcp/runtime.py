@@ -406,7 +406,8 @@ class PlatformRuntime:
                 status, bot = self.request("GET", self.url("bot", botId=bot_id))
                 version_id = self.attributes(bot).get("currentVersionId") if 200 <= status < 300 else None
         if not bot_id or not version_id: return {"tested": False, "error": "no successful platform response"}
-        body = {"data": {"type": "engine", "attributes": {"sessionId": session_id or f"vibe-{uuid.uuid4().hex}", "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
+        active_session_id = session_id or f"vibe-{uuid.uuid4().hex}"
+        body = {"data": {"type": "engine", "attributes": {"sessionId": active_session_id, "messageId": uuid.uuid4().hex, "callbackUrl": None, "uuid": {"sub": "vibe-agent", "userId": "vibe-agent"}, "payload": {"message": {"originalText": message or self.context.get("testMessage", "Hello")}, "userContextData": {"user": {}}, "contextOverride": None}, "debug": True, "environmentId": None}}}
         status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         if status >= 500: time.sleep(1); status, data = self.request("POST", self.url("engine", botId=bot_id, versionId=version_id), body)
         assertions = {"contains": False, "buttons": False, "command": False, "regex": False, "forbidden": False}
@@ -434,15 +435,51 @@ class PlatformRuntime:
                 "regex": all(matches(pattern) for pattern in expected_patterns),
                 "forbidden": all(not matches(pattern) for pattern in forbidden_patterns),
             }
-        technical = not reply or "техническая ошибка" in reply.lower() or "technical error" in reply.lower()
+        engine_errors = self.engine_errors(data)
+        awaiting_user = self.awaiting_user(data)
+        technical = not reply or "техническая ошибка" in reply.lower() or "technical error" in reply.lower() or bool(engine_errors)
         tested = 200 <= status < 300 and not technical
-        return {"tested": tested, "passed": tested and all(assertions.values()), "status": status, "reply": reply, "buttons": buttons, "commands": commands, "assertions": assertions, "technical": technical, "response": self.redact(data)}
+        return {"sessionId": active_session_id, "tested": tested, "passed": tested and all(assertions.values()), "status": status, "reply": reply, "buttons": buttons, "commands": commands, "awaitingUser": awaiting_user, "assertions": assertions, "technical": technical, "engineErrors": engine_errors, "response": self.redact(data)}
+
+    @staticmethod
+    def engine_errors(data: Any) -> list[dict[str, str]]:
+        """Extract a stable, compact diagnostic from an engine debug payload."""
+        try:
+            executions = data["data"]["attributes"].get("debug", {}).get("executions", [])
+        except (KeyError, TypeError):
+            return []
+        errors: list[dict[str, str]] = []
+        for execution in executions if isinstance(executions, list) else []:
+            for node in execution.get("nodes", []) if isinstance(execution, dict) else []:
+                for block in node.get("blocks", []) if isinstance(node, dict) else []:
+                    if isinstance(block, dict) and block.get("isError"):
+                        errors.append({"nodeId": str(node.get("nodeId", "")), "blockId": str(block.get("blockId", "")), "message": str(block.get("errorMessage", ""))[:800]})
+                        if len(errors) == 3:
+                            return errors
+        return errors
+
+    @staticmethod
+    def awaiting_user(data: Any) -> bool:
+        """Report whether the engine suspended the turn for another user action."""
+        try:
+            executions = data["data"]["attributes"].get("debug", {}).get("executions", [])
+        except (KeyError, TypeError):
+            return False
+        for execution in executions if isinstance(executions, list) else []:
+            for node in execution.get("nodes", []) if isinstance(execution, dict) else []:
+                for block in node.get("blocks", []) if isinstance(node, dict) else []:
+                    if isinstance(block, dict) and isinstance(block.get("result"), dict) and block["result"].get("is_interrupted") is True:
+                        return True
+        return False
 
     def verify(self, tests: Any) -> dict[str, Any]:
         if not isinstance(tests, list) or not tests:
             return {"terminal": False, "passed": False, "errors": ["tests must be a non-empty list"], "expectedCase": {"name": "concise case name", "steps": [{"message": "first user message"}]}}
         def valid_step(step: Any) -> bool:
             return isinstance(step, dict) and isinstance(step.get("message"), str) and bool(step["message"].strip())
+
+        def has_assertion(step: dict[str, Any]) -> bool:
+            return bool(step.get("expectContains") or step.get("expectRegex") or step.get("forbidRegex") or step.get("expectButtons") or step.get("expectCommand"))
 
         def case_error(case: Any, index: int) -> str | None:
             if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"].strip():
@@ -454,6 +491,9 @@ class PlatformRuntime:
                 return f"case {index} has both message and steps; remove message or steps (keep steps for a stateful flow)"
             if not has_message and not has_steps:
                 return f"case {index} needs exactly one of a non-empty message or non-empty steps"
+            checks = [case] if has_message else steps
+            if any(not has_assertion(step) for step in checks):
+                return f"case {index} needs at least one observable assertion on every tested step"
             return None
 
         invalid = [error for index, case in enumerate(tests) if (error := case_error(case, index))]

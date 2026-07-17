@@ -25,7 +25,7 @@ turns in the same session; otherwise use independent cases. If verification fail
 draft, and repeat the necessary publish-and-verify cycle. Do not claim completion before verification
 passes.
 When the requested behavior includes a user-facing menu or named buttons, implement those as actual buttons and assert every requested label in the verification plan; text that merely lists choices is insufficient.
-For a stateful verification case, start with the interaction that initializes the fresh session whenever the bot opens with a prompt or menu. Put the subsequent user reply in the next step; do not assume a fresh engine session is already past the opening turn.
+Before submitting the final verification suite, explore the published bot as a real conversation with test_published_bot. Its first result supplies a sessionId; reuse that same sessionId for the next turn, read the reply/buttons/commands, and choose the next user action from what the bot actually showed. If a response has awaitingUser:true, continue that session. If it exposes buttons, use one of those exact labels as the next choice unless it exposes a command that says otherwise. Reproduce the observed multi-turn conversation as a stateful final verification case, with an observable assertion on every step. A technical engine error is evidence for a repair, not a failed content assertion. For a stateful verification case, start with the interaction that initializes the fresh session whenever the bot opens with a prompt or menu. Put the subsequent user reply in the next step; do not assume a fresh engine session is already past the opening turn.
 Never invent results or tailor instructions to benchmark examples."""
 
 
@@ -73,6 +73,34 @@ def compact_tool_arguments(arguments: dict[str, Any]) -> str:
         return json.dumps({"bot": summary}, ensure_ascii=False)
     text = json.dumps(arguments, ensure_ascii=False)
     return text if len(text) <= 4_000 else json.dumps({"truncated": True, "originalChars": len(text)}, ensure_ascii=False)
+
+
+def verification_fingerprint(result: dict[str, Any]) -> str:
+    """Make repeated black-box failures comparable without run-specific IDs."""
+    failures: list[dict[str, Any]] = []
+    for case in result.get("results", []) if isinstance(result.get("results"), list) else []:
+        if not isinstance(case, dict):
+            continue
+        steps = case.get("steps") if isinstance(case.get("steps"), list) else [case]
+        for step in steps:
+            if not isinstance(step, dict) or step.get("passed"):
+                continue
+            assertions = step.get("assertions") if isinstance(step.get("assertions"), dict) else {}
+            failures.append({
+                "case": str(case.get("name", "")),
+                "technical": bool(step.get("technical")),
+                "failedAssertions": sorted(str(name) for name, passed in assertions.items() if not passed),
+                "engineErrors": step.get("engineErrors") if isinstance(step.get("engineErrors"), list) else [],
+            })
+            break
+    return json.dumps(failures, ensure_ascii=False, sort_keys=True)
+
+
+def plan_covers_live_dialogue(tests: Any, turns: int) -> bool:
+    """Require the final suite to replay a conversation it already explored."""
+    if turns < 2 or not isinstance(tests, list):
+        return True
+    return any(isinstance(case, dict) and isinstance(case.get("steps"), list) and len(case["steps"]) >= turns for case in tests)
 
 
 def compact_platform_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -231,7 +259,7 @@ class Agent:
                 "This is a CREATE run. Do not call inspect_existing_bot: no bot is selected and it is not useful."
                 if is_create else
                 "This is an UPDATE run. Call inspect_existing_bot successfully before publishing."
-            ) + " A malformed verification plan is not a bot failure: correct and resubmit only verify_published_bot. If a valid verification plan reports failed behavior, call get_saved_draft, save a repaired draft, publish it, then verify it again."
+            ) + " A malformed verification plan is not a bot failure: correct and resubmit only verify_published_bot. If a valid verification plan reports failed behavior, inspect the live conversation and its engineErrors, then call get_saved_draft, save a repaired draft, publish it, and verify it again."
             system = SYSTEM + f"\n\n# Execution rules\n{mode_rules}\n\n# Work-style skill\n{self.work_style}\n\n# MCP platform context\n{json.dumps(context, ensure_ascii=False)}"
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
             verified = False
@@ -239,6 +267,13 @@ class Agent:
             verification_plan_repair_only = False
             behavior_repair_required = False
             repair_publish_only = False
+            live_test_required = False
+            live_session_id = ""
+            live_turns = 0
+            required_button_titles: list[str] = []
+            diagnostic_test_required = False
+            last_failure = ""
+            repeated_failure_count = 0
             pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             tools = mcp.openai_tools()
@@ -272,6 +307,21 @@ class Agent:
                             result = {"ok": False, "toolError": f"Tool {name!r} is not available in this run mode", "availableTools": available_tools}
                         elif verification_plan_repair_only and role != "verification":
                             result = {"ok": False, "toolError": "The published bot has not been tested because the verification plan was invalid. Resubmit only verify_published_bot with a corrected tests array.", "availableTools": available_tools}
+                        elif role == "verification" and live_test_required:
+                            result = {"ok": False, "toolError": "Before final verification, start a live conversation with test_published_bot. Read its response and reuse its sessionId for the next turn when the bot is conversational.", "availableTools": available_tools}
+                        elif role == "verification" and not plan_covers_live_dialogue(arguments.get("tests"), live_turns):
+                            result = {"ok": False, "toolError": f"The live exploration used {live_turns} turns in one session. The final verification plan must include a stateful case with at least {live_turns} ordered steps that replays that observed dialogue.", "availableTools": available_tools}
+                        elif name == "test_published_bot" and live_test_required and live_session_id:
+                            supplied_session = str(arguments.get("sessionId", ""))
+                            supplied_message = arguments.get("message")
+                            if supplied_session != live_session_id:
+                                result = {"ok": False, "toolError": "Continue the required live conversation with the sessionId returned by the preceding test_published_bot call.", "availableTools": available_tools}
+                            elif required_button_titles and supplied_message not in required_button_titles:
+                                result = {"ok": False, "toolError": "The previous live response displayed buttons. Continue by sending one of its exact button labels as the next message.", "availableTools": available_tools}
+                            else:
+                                result = mcp.call(name, arguments)
+                        elif diagnostic_test_required and name not in {"test_published_bot", "get_saved_draft"}:
+                            result = {"ok": False, "toolError": "The same published verification failure repeated after repair. First use test_published_bot to inspect the live reply and engineErrors, then repair the saved draft from that evidence.", "availableTools": available_tools}
                         elif repair_publish_only and role != "publication":
                             result = {"ok": False, "toolError": "A repaired draft is valid and saved. Call publish_draft now; do not save it again.", "availableTools": available_tools}
                         elif role == "publication" and (publication_needs_verification or behavior_repair_required):
@@ -296,7 +346,7 @@ class Agent:
                     messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": compact_tool_result(result)})
                     if role == "publication" and result.get("frontendUrl"):
                         pending_frontend_url = str(result["frontendUrl"])
-                    if role == "verification":
+                    if role == "verification" and not result.get("toolError"):
                         if result.get("errors"):
                             verification_plan_repair_only = True
                             publication_needs_verification = True
@@ -313,6 +363,16 @@ class Agent:
                             publication_needs_verification = False
                             verification_plan_repair_only = False
                             behavior_repair_required = True
+                            failure = verification_fingerprint(result)
+                            if failure and failure == last_failure:
+                                repeated_failure_count += 1
+                            else:
+                                last_failure = failure
+                                repeated_failure_count = 1
+                            if repeated_failure_count >= 3:
+                                raise RuntimeError("the same published verification failure repeated after two repairs; stopping instead of publishing another unchanged behavior")
+                            if repeated_failure_count >= 2:
+                                diagnostic_test_required = True
                             if result.get("engineHealthy"):
                                 print("Published behavior did not meet verification assertions; use only requirements from the user, then repair the draft if the actual behavior is wrong.", flush=True)
                             else:
@@ -321,9 +381,31 @@ class Agent:
                         if behavior_repair_required:
                             behavior_repair_required = False
                             repair_publish_only = True
+                    if name == "test_published_bot" and result.get("tested"):
+                        session_id = str(result.get("sessionId", ""))
+                        if not live_session_id:
+                            live_session_id = session_id
+                            live_turns = 1
+                        elif session_id == live_session_id:
+                            live_turns += 1
+                        if required_button_titles:
+                            required_button_titles = []
+                            live_test_required = False
+                        elif result.get("buttons"):
+                            required_button_titles = [str(title) for title in result["buttons"] if isinstance(title, str) and title]
+                            live_test_required = bool(required_button_titles)
+                        elif result.get("awaitingUser") and live_turns < 2:
+                            live_test_required = True
+                        else:
+                            live_test_required = False
+                        diagnostic_test_required = False
                     if role == "publication" and result.get("published"):
                         publication_needs_verification = True
                         repair_publish_only = False
+                        live_test_required = True
+                        live_session_id = ""
+                        live_turns = 0
+                        required_button_titles = []
                         smoke = result.get("test") or {}
                         if smoke.get("reply"):
                             print(f"SMOKE TEST reply: {str(smoke['reply'])[:500]}", flush=True)

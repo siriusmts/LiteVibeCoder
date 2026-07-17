@@ -238,6 +238,13 @@ class McpIntegrationTests(unittest.TestCase):
         self.assertTrue(any("template syntax" in error for error in result["errors"]))
         self.assertTrue(any("condition DSL" in error for error in result["errors"]))
 
+    def test_rejects_human_worded_condition_expression(self):
+        condition = {"id": "route", "type": "single_if", "title": "Result present", "expression": "session.result is not empty", "code_type": "custom", "target_node_id": "start"}
+        draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [condition]}]}]}
+        result = self.client.call("save_draft", {"bot": draft})
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("condition DSL" in error for error in result["errors"]))
+
     def test_rejects_invented_blocks_and_block_level_sequential_routes(self):
         invented = {"id": "menu", "type": "interactive", "buttons": [{"title": "Continue", "target_node_id": "start"}], "next_node_id": "start"}
         draft = {**VALID_BOT, "scenarios": [{**VALID_BOT["scenarios"][0], "nodes": [{"id": "start", "name": "Start", "blocks": [invented]}]}]}
@@ -278,12 +285,13 @@ class McpIntegrationTests(unittest.TestCase):
             def stop(self): pass
             def configure(self, context): return {}
             def context_tool(self): return "platform_contract"
-            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "verify_published_bot")]
+            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "test_published_bot", "verify_published_bot")]
             def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
             def call(self, name, arguments):
                 if name == "platform_contract": return {"payload": {}}
                 if name == "read_file": raise RuntimeError("MCP tools/call: Unknown MCP tool: read_file")
                 if name == "publish_draft": return {"published": True, "frontendUrl": "http://example.test/projects/1"}
+                if name == "test_published_bot": return {"tested": True, "sessionId": "session-1", "reply": "Hello"}
                 return {"passed": True}
 
         config = Config("", "", "", "", "", "http://llm.test", "key", "model", True, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
@@ -291,7 +299,8 @@ class McpIntegrationTests(unittest.TestCase):
         responses = iter([
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "read_file", "arguments": "{}"}}]}}]},
             {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
-            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "test_published_bot", "arguments": "{\"message\":\"hello\"}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "verify_published_bot", "arguments": "{}"}}]}}]},
         ])
         with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)), patch("sys.stdout") as stdout:
             agent.run("Build a bot")
@@ -334,25 +343,26 @@ class McpIntegrationTests(unittest.TestCase):
             def stop(self): pass
             def configure(self, context): return {}
             def context_tool(self): return "platform_contract"
-            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("platform_contract", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft")]
+            def openai_tools(self): return [{"type": "function", "function": {"name": name}} for name in ("platform_contract", "publish_draft", "test_published_bot", "verify_published_bot", "get_saved_draft", "save_draft")]
             def tool_role(self, name): return "publication" if name == "publish_draft" else ("verification" if name == "verify_published_bot" else "context")
             def call(self, name, arguments):
                 self.calls.append(name)
                 if name == "platform_contract": return {}
                 if name == "publish_draft": return {"published": True}
+                if name == "test_published_bot": return {"tested": True, "sessionId": "session-1", "reply": "Hello"}
                 if name == "verify_published_bot": return {"passed": len([call for call in self.calls if call == "verify_published_bot"]) > 1}
                 if name == "get_saved_draft": return {"available": True, "bot": {"name": "draft"}}
                 if name == "save_draft": return {"saved": True, "valid": True}
                 raise AssertionError(f"unexpected tool: {name}")
 
         fake_mcp = FakeMcp()
-        config = Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 8, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
+        config = Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 10, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md"))
         agent = Agent(config)
-        calls = ["publish_draft", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft", "save_draft", "publish_draft", "verify_published_bot"]
+        calls = ["publish_draft", "publish_draft", "test_published_bot", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"]
         responses = iter([{"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": str(index), "function": {"name": name, "arguments": "{}"}}]}}]} for index, name in enumerate(calls, start=1)])
         with patch("mws_agent.loop.MCPClient", return_value=fake_mcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)):
             agent.run("Build a bot")
-        self.assertEqual(fake_mcp.calls, ["platform_contract", "publish_draft", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "verify_published_bot"])
+        self.assertEqual(fake_mcp.calls, ["platform_contract", "publish_draft", "test_published_bot", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"])
 
     def test_invalid_save_keeps_last_valid_draft_available_for_repair(self):
         runtime = PlatformRuntime()
@@ -469,11 +479,28 @@ class McpIntegrationTests(unittest.TestCase):
         failed = runtime.verify([{"name": "handoff", "message": "hello", "expectCommand": "go_operator"}])
         forbidden = runtime.verify([{"name": "forbidden", "message": "hello", "forbidRegex": ["hello"]}])
         invalid = runtime.verify([{"message": "hello"}])
+        unasserted = runtime.verify([{"name": "unasserted", "message": "hello"}])
         self.assertTrue(passed["passed"])
         self.assertFalse(failed["passed"])
         self.assertFalse(forbidden["passed"])
         self.assertFalse(invalid["passed"])
+        self.assertFalse(unasserted["passed"])
         self.assertIn("case 0 needs a non-empty name", invalid["errors"])
+        self.assertIn("observable assertion", unasserted["errors"][0])
+
+    def test_live_engine_test_returns_session_and_compact_error(self):
+        runtime = PlatformRuntime()
+        runtime.last_response = {"data": {"attributes": {"id": "bot", "versionId": "version", "scenarios": [{"id": "scenario"}]}}}
+        response = {"data": {"attributes": {
+            "payload": {"items": [{"bubble": {"value": "Temporary reply"}}], "suggestions": {"buttons": []}},
+            "debug": {"executions": [{"nodes": [{"nodeId": "lookup", "blocks": [{"blockId": "request", "isError": True, "errorMessage": "upstream failed", "result": {"is_interrupted": True}}]}]}]},
+        }}}
+        runtime.request = lambda *args, **kwargs: (200, response)  # type: ignore[method-assign]
+        result = runtime.engine_test("hello", session_id="conversation-1")
+        self.assertEqual(result["sessionId"], "conversation-1")
+        self.assertTrue(result["technical"])
+        self.assertTrue(result["awaitingUser"])
+        self.assertEqual(result["engineErrors"], [{"nodeId": "lookup", "blockId": "request", "message": "upstream failed"}])
 
     def test_verification_reports_message_and_steps_conflict(self):
         runtime = PlatformRuntime()
@@ -509,6 +536,62 @@ class McpIntegrationTests(unittest.TestCase):
             agent.run("Build a bot")
         self.assertEqual(calls[1], ["verify_published_bot"])
 
+    def test_loop_requires_live_turn_before_final_verification(self):
+        class FakeMcp:
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self):
+                return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "test_published_bot", "verify_published_bot")]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
+            def call(self, name, arguments):
+                if name == "platform_contract": return {}
+                if name == "publish_draft": return {"published": True}
+                if name == "test_published_bot": return {"tested": True, "sessionId": "session-1", "reply": "What would you like?"}
+                return {"passed": True}
+
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 4, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        replies = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"premature","message":"hello"}]}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "test_published_bot", "arguments": '{"message":"hello"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"checked","message":"hello"}]}'}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", FakeMcp), patch.object(agent, "llm_request", side_effect=lambda messages, tools: next(replies)):
+            agent.run("Build a bot")
+
+    def test_loop_continues_an_interactive_live_session_before_verification(self):
+        class FakeMcp:
+            def __init__(self): self.live_calls = 0
+            def start(self): pass
+            def stop(self): pass
+            def configure(self, context): return {}
+            def context_tool(self): return "platform_contract"
+            def openai_tools(self):
+                return [{"type": "function", "function": {"name": name}} for name in ("publish_draft", "test_published_bot", "verify_published_bot")]
+            def tool_role(self, name): return "verification" if name == "verify_published_bot" else ("publication" if name == "publish_draft" else None)
+            def call(self, name, arguments):
+                if name == "platform_contract": return {}
+                if name == "publish_draft": return {"published": True}
+                if name == "test_published_bot":
+                    self.live_calls += 1
+                    return {"tested": True, "sessionId": "session-1", "reply": "Continue", "awaitingUser": self.live_calls == 1}
+                return {"passed": True}
+
+        fake = FakeMcp()
+        agent = Agent(Config("", "", "", "", "", "http://llm.test", "key", "model", False, None, None, 5, "Hello", Path("debug"), None, Path("skills/mws-nocode"), Path("skills/quality-loop/SKILL.md")))
+        replies = iter([
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "publish_draft", "arguments": "{}"}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "2", "function": {"name": "test_published_bot", "arguments": '{"message":"open"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "3", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"premature","message":"hello"}]}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "4", "function": {"name": "test_published_bot", "arguments": '{"message":"next","sessionId":"session-1"}'}}]}}]},
+            {"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": "5", "function": {"name": "verify_published_bot", "arguments": '{"tests":[{"name":"checked","steps":[{"message":"open","expectContains":["Continue"]},{"message":"next","expectContains":["Continue"]}]}]}'}}]}}]},
+        ])
+        with patch("mws_agent.loop.MCPClient", return_value=fake), patch.object(agent, "llm_request", side_effect=lambda messages, tools: next(replies)):
+            agent.run("Build a bot")
+        self.assertEqual(fake.live_calls, 2)
+
     def test_verification_suite_keeps_stateful_steps_in_one_session(self):
         runtime = PlatformRuntime()
         seen_sessions = []
@@ -518,7 +601,7 @@ class McpIntegrationTests(unittest.TestCase):
             return {"tested": True, "passed": True, "reply": message}
 
         runtime.engine_test = fake_engine  # type: ignore[method-assign]
-        result = runtime.verify([{"name": "confirmation", "steps": [{"message": "choose a time"}, {"message": "yes, confirm"}]}])
+        result = runtime.verify([{"name": "confirmation", "steps": [{"message": "choose a time", "expectContains": ["choose"]}, {"message": "yes, confirm", "expectContains": ["confirm"]}]}])
         self.assertTrue(result["passed"])
         self.assertEqual(len(seen_sessions), 2)
         self.assertIsNotNone(seen_sessions[0])
