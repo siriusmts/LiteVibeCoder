@@ -4,7 +4,11 @@ This is a clean, small tool-calling loop compatible with the supplied MWS deskto
 
 `SKILL.md` is the adapter-required skill index. The actual detachable skills live in `skills/`: `quality-loop` carries the platform-independent delivery method, while `mws-nocode` carries MWS routes, validation, headers, payload envelope, and frontend-link format. Replace the latter through `MWS_AGENT_PLATFORM_SKILL` without modifying the core loop. When the supplied GUI materializes a runtime copy, set `MTS_AGENT_DIR` to this source directory so the runtime loads the original skill pack.
 
-The LLM chooses between platform inspection, drafting, structural validation, publication, and a coverage-driven post-publication verification plan. It decides how many named black-box cases are necessary from the task's observable paths; cases can contain ordered shared-session steps and text, positive-regex, forbidden-regex, button, or command assertions. Success requires the MCP verifier to pass them all. A rejected or unavailable MCP call is returned to the model as factual tool feedback, allowing it to recover with one of the discovered tools instead of terminating the run. Drafts are saved to `debug/last_platform_payload.json`; responses go to `debug/last_platform_response.json`.
+The builder LLM chooses between platform inspection, drafting, structural validation, publication, and repair. After each real publication, an independent QA subagent using the same configured model derives observable requirements from the original request and tests the published bot through a real, stateful conversation. It chooses later messages from actual replies, buttons, commands, session state, and engine errors. A frontend link is returned only after every requirement has evidence and the QA verdict passes.
+
+When QA finds a real behavior defect, it returns requirement-linked evidence and a concrete repair recommendation to the builder. The orchestration layer then enforces `get_saved_draft -> save_draft -> publish_draft` and starts a fresh QA run against the repaired version. A prose-only builder response cannot accidentally terminate this handoff. Live exploration is bounded from the number of planned requirements and capped at 12 messages, repeated actions are rejected, and the subagent must finish with a structured pass/fail verdict. These are domain-independent loop controls; no recipe, benchmark, or other task-specific behavior is encoded in the agent.
+
+A rejected or unavailable MCP call is returned to the model as factual tool feedback, allowing it to recover with one of the discovered tools instead of terminating the run. Drafts are saved to `debug/last_platform_payload.json`; responses go to `debug/last_platform_response.json`.
 
 ## Run
 
@@ -33,7 +37,7 @@ Only remove `--dry-run` when the draft run is satisfactory and you intend to pub
 
 The startup log should show `MCP TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
 
-The default emergency ceiling is 64 tool/repair turns (`--max-turns`); it is not a test-count limit or normal completion condition. The model decides the verification suite size and ends the run after it passes. `COTYPE_TIMEOUT` defaults to 180 seconds and can be reduced by a runner when needed. When EVA provides `COTYPE_GENERATION_BASE_URL`, the agent uses it for model calls while preserving `COTYPE_BASE_URL` for the platform payload. A `Frontend URL:` line is emitted only after the published version passes the verification suite.
+The default emergency ceiling is 64 builder tool/repair turns (`--max-turns`); it is not a test-count limit or normal completion condition. `COTYPE_TIMEOUT` controls large builder requests and defaults to 600 seconds. Smaller QA requests use `MWS_VERIFIER_LLM_TIMEOUT` (120 seconds by default), with `MWS_VERIFIER_MAX_LIVE_TURNS` providing the hard exploration ceiling (12 by default). Set `MWS_VERIFICATION_MODE=legacy` only to restore the older inline verifier. When EVA provides `COTYPE_GENERATION_BASE_URL`, the agent uses it for model calls while preserving `COTYPE_BASE_URL` for the platform payload. A `Frontend URL:` line is emitted only after the published version passes independent QA.
 
 ## Detachable MCP tools
 
