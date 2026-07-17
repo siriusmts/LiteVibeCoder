@@ -88,6 +88,7 @@ def compact_platform_context(context: dict[str, Any]) -> dict[str, Any]:
         if key in validation
     }
     return {
+        "instructions": context.get("instructions"),
         "mode": context.get("mode"), "dryRun": context.get("dryRun"),
         "updatePrecondition": context.get("updatePrecondition"),
         "payload": context.get("payload"),
