@@ -178,8 +178,8 @@ class Agent:
         finally:
             mcp.stop()
 
-    def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], timeout_seconds: int | None = None) -> dict[str, Any]:
-        payload = {"model": self.c.model, "messages": messages, "tools": tools, "tool_choice": "auto", "temperature": 0.1}
+    def llm_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], timeout_seconds: int | None = None, tool_choice: str | dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {"model": self.c.model, "messages": messages, "tools": tools, "tool_choice": tool_choice or "auto", "temperature": 0.1}
         thinking = os.getenv("LLM_ENABLE_THINKING", "").strip().lower()
         if thinking in {"true", "false"}:
             # vLLM-compatible Qwen deployments read this extension from their
@@ -267,6 +267,8 @@ class Agent:
             publication_needs_verification = False
             verification_plan_repair_only = False
             behavior_repair_required = False
+            repair_fetch_required = False
+            repair_save_required = False
             repair_publish_only = False
             live_test_required = False
             live_session_id = ""
@@ -277,6 +279,7 @@ class Agent:
             repeated_failure_count = 0
             last_subagent_failure = ""
             repeated_subagent_failure_count = 0
+            no_tool_response_count = 0
             pending_frontend_url = ""
             if self.c.history_file and Path(self.c.history_file).is_file(): messages.append({"role": "user", "content": "Prior conversation context:\n" + Path(self.c.history_file).read_text(encoding="utf-8")[-12000:]})
             tools = mcp.openai_tools()
@@ -289,14 +292,39 @@ class Agent:
                 # A malformed suite is an argument-shape problem, not a bot
                 # repair.  Giving the model only this tool prevents it from
                 # spending turns editing or republishing an untested draft.
-                turn_tools = [tool for tool in tools if mcp.tool_role(tool["function"]["name"]) == "verification"] if verification_plan_repair_only else tools
-                response = self.llm_request(messages, turn_tools)
+                force_tool_call = False
+                if verification_plan_repair_only:
+                    turn_tools = [tool for tool in tools if mcp.tool_role(tool["function"]["name"]) == "verification"]
+                    required_action = "verify_published_bot"
+                elif repair_fetch_required:
+                    turn_tools = [tool for tool in tools if tool["function"]["name"] == "get_saved_draft"]
+                    required_action = "get_saved_draft"
+                    force_tool_call = True
+                elif repair_save_required:
+                    turn_tools = [tool for tool in tools if tool["function"]["name"] == "save_draft"]
+                    required_action = "save_draft"
+                    force_tool_call = True
+                elif repair_publish_only:
+                    turn_tools = [tool for tool in tools if mcp.tool_role(tool["function"]["name"]) == "publication"]
+                    required_action = "publish_draft"
+                    force_tool_call = True
+                else:
+                    turn_tools = tools
+                    required_action = ""
+                response = self.llm_request(messages, turn_tools, tool_choice="required") if force_tool_call else self.llm_request(messages, turn_tools)
                 message = ((response.get("choices") or [{}])[0].get("message") or {}); messages.append(message)
                 calls = message.get("tool_calls") or []
                 if not calls:
                     if verified:
                         print(str(message.get("content") or "Completed.")); return
-                    raise RuntimeError("agent stopped before the MCP verification tool passed")
+                    if required_action and no_tool_response_count < 2:
+                        no_tool_response_count += 1
+                        print(f"MAIN AGENT returned text instead of required {required_action}; retrying the required repair step.", flush=True)
+                        messages.append({"role": "user", "content": f"Continue the repair now. Call {required_action}; do not answer with prose."})
+                        continue
+                    phase = f"required repair step {required_action}" if required_action else "publication and independent verification"
+                    raise RuntimeError(f"main agent stopped before completing {phase}")
+                no_tool_response_count = 0
                 for call in calls:
                     function = call.get("function") or {}; name = str(function.get("name", ""))
                     role = mcp.tool_role(name)
@@ -311,6 +339,10 @@ class Agent:
                     else:
                         if name not in available_tools:
                             result = {"ok": False, "toolError": f"Tool {name!r} is not available in this run mode", "availableTools": available_tools}
+                        elif repair_fetch_required and name != "get_saved_draft":
+                            result = {"ok": False, "toolError": "QA found published behavior defects. Call get_saved_draft before editing.", "availableTools": available_tools}
+                        elif repair_save_required and name != "save_draft":
+                            result = {"ok": False, "toolError": "Repair the fetched draft and call save_draft.", "availableTools": available_tools}
                         elif verification_plan_repair_only and role != "verification":
                             result = {"ok": False, "toolError": "The published bot has not been tested because the verification plan was invalid. Resubmit only verify_published_bot with a corrected tests array.", "availableTools": available_tools}
                         elif role == "verification" and live_test_required:
@@ -397,9 +429,13 @@ class Agent:
                             else:
                                 print("Published behavior failed verification; model must repair the draft and publish a new version.", flush=True)
                     if name == "save_draft" and result.get("valid"):
+                        repair_save_required = False
                         if behavior_repair_required:
                             behavior_repair_required = False
                             repair_publish_only = True
+                    if name == "get_saved_draft" and result.get("available"):
+                        repair_fetch_required = False
+                        repair_save_required = True
                     if name == "test_published_bot" and result.get("tested"):
                         diagnostic_test_required = False
                     if name == "test_published_bot" and result.get("tested") and required_live_call:
@@ -420,6 +456,8 @@ class Agent:
                         else:
                             live_test_required = False
                     if role == "publication" and result.get("published"):
+                        repair_fetch_required = False
+                        repair_save_required = False
                         repair_publish_only = False
                         smoke = result.get("test") or {}
                         if smoke.get("reply"):
@@ -437,6 +475,7 @@ class Agent:
                                 print(f"QA SUBAGENT passed: {verification.get('summary', 'all requested behavior was observed')}", flush=True)
                                 return
                             behavior_repair_required = True
+                            repair_fetch_required = True
                             fingerprint = json.dumps(verification.get("issues") or [], ensure_ascii=False, sort_keys=True)
                             if fingerprint and fingerprint == last_subagent_failure:
                                 repeated_subagent_failure_count += 1

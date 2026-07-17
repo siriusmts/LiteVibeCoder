@@ -129,6 +129,7 @@ class VerificationSubagentTests(unittest.TestCase):
         agent = Agent(config)
         main_replies = iter([
             tool_response("publish_draft", {}, "main-1"),
+            {"choices": [{"message": {"role": "assistant", "content": "I will fix the bot."}}]},
             tool_response("get_saved_draft", {}, "main-2"),
             tool_response("save_draft", {"bot": {"name": "repaired"}}, "main-3"),
             tool_response("publish_draft", {}, "main-4"),
@@ -155,6 +156,7 @@ class VerificationSubagentTests(unittest.TestCase):
         ])
         current_qa = None
         main_tool_sets = []
+        main_request_options = []
         qa_timeouts = []
 
         def request(messages, tools, **kwargs):
@@ -170,6 +172,7 @@ class VerificationSubagentTests(unittest.TestCase):
                     current_qa = next(qa_runs)
                     return next(current_qa)
             main_tool_sets.append(names)
+            main_request_options.append(kwargs)
             return next(main_replies)
 
         output = io.StringIO()
@@ -179,9 +182,13 @@ class VerificationSubagentTests(unittest.TestCase):
         self.assertTrue(all("test_published_bot" not in names and "verify_published_bot" not in names for names in main_tool_sets))
         self.assertEqual([name for name, _ in fake.calls], ["platform_contract", "publish_draft", "test_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot"])
         self.assertIn("QA SUBAGENT found bot defects", output.getvalue())
+        self.assertIn("returned text instead of required get_saved_draft", output.getvalue())
         self.assertIn("QA SUBAGENT passed", output.getvalue())
         self.assertIn("Frontend URL: http://bot/2", output.getvalue())
         self.assertTrue(qa_timeouts and all(value == 120 for value in qa_timeouts))
+        self.assertEqual(main_tool_sets[1], {"get_saved_draft"})
+        self.assertEqual(main_tool_sets[2], {"get_saved_draft"})
+        self.assertEqual(main_request_options[1].get("tool_choice"), "required")
 
 
 if __name__ == "__main__":

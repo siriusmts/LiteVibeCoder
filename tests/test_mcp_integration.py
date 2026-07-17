@@ -388,7 +388,7 @@ class McpIntegrationTests(unittest.TestCase):
         agent = Agent(config)
         calls = ["publish_draft", "publish_draft", "test_published_bot", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"]
         responses = iter([{"choices": [{"message": {"role": "assistant", "tool_calls": [{"id": str(index), "function": {"name": name, "arguments": "{}"}}]}}]} for index, name in enumerate(calls, start=1)])
-        with patch("mws_agent.loop.MCPClient", return_value=fake_mcp), patch.object(agent, "llm_request", side_effect=lambda *_: next(responses)):
+        with patch("mws_agent.loop.MCPClient", return_value=fake_mcp), patch.object(agent, "llm_request", side_effect=lambda *_, **__: next(responses)):
             agent.run("Build a bot")
         self.assertEqual(fake_mcp.calls, ["platform_contract", "publish_draft", "test_published_bot", "verify_published_bot", "get_saved_draft", "save_draft", "publish_draft", "test_published_bot", "verify_published_bot"])
 
