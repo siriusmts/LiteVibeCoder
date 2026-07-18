@@ -219,6 +219,7 @@ class Agent:
         streaming = os.getenv("LLM_STREAM", "").strip().lower() in {"1", "true", "yes"}
         if streaming:
             payload["stream"] = True
+        # print('URL=',f"{self.c.llm_url}/chat/completions","model:", self.c.model)
         request = urllib.request.Request(f"{self.c.llm_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {self.c.llm_key}"}, method="POST")
         for attempt in range(2):
             try:
