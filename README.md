@@ -1,59 +1,59 @@
-# Minimal MWS vibecoding agent
+# Минимальный агент вайбкодинга для MWS
 
-This is a clean, small tool-calling loop compatible with the supplied MWS desktop adapter. It deliberately keeps credentials out of the repository and has no third-party runtime dependency.
+Это чистый, компактный цикл вызова инструментов (tool-calling loop), совместимый с предоставленным десктопным адаптером MWS. В репозитории намеренно отсутствуют учетные данные и сторонние runtime-зависимости.
 
-`SKILL.md` is the adapter-required skill index. The actual detachable skills live in `skills/`: `quality-loop` carries the platform-independent delivery method, while `mws-nocode` carries MWS routes, validation, headers, payload envelope, and frontend-link format. Replace the latter through `MWS_AGENT_PLATFORM_SKILL` without modifying the core loop. When the supplied GUI materializes a runtime copy, set `MTS_AGENT_DIR` to this source directory so the runtime loads the original skill pack.
+`SKILL.md` — индекс навыков, требуемый адаптером. Сами подключаемые навыки находятся в директории `skills/`: `quality-loop` содержит платформо-независимую методику доставки, а `mws-nocode` — маршруты MWS, валидацию, заголовки, формат конверта запроса (payload envelope) и ссылки на фронтенд. Последний можно заменить через переменную `MWS_AGENT_PLATFORM_SKILL` без изменения основного цикла агента. При создании копии среды выполнения через GUI укажите `MTS_AGENT_DIR`, указывающий на эту исходную директорию, чтобы среда загружала оригинальный набор навыков.
 
-The builder LLM chooses between platform inspection, drafting, structural validation, publication, and repair. After each real publication, an independent QA subagent using the same configured model derives observable requirements from the original request and tests the published bot through real isolated and stateful conversations. It chooses later messages from actual replies, buttons, commands, session state, and engine errors. The runtime prints `Frontend URL (published, QA pending)` immediately after publication so a human can inspect that exact version, then reports final verified completion only after every requirement has evidence and the QA verdict passes.
+LLM-конструктор (builder LLM) выбирает между инспекцией платформы, созданием черновика, структурной валидацией, публикацией и исправлением ошибок. После каждой фактической публикации независимый QA-субагент на той же настроенной модели выводит наблюдаемые требования из исходного запроса и тестирует опубликованного бота в реальных изолированных диалогах с сохранением состояния. Выбор последующих сообщений строится на основе фактических ответов, кнопок, команд, состояния сессии и ошибок движка. Среда выполнения сразу после публикации выводит `Frontend URL (published, QA pending)` для ручной проверки этой версии, а финальное подтверждение успешного выполнения выдается только тогда, когда каждое требование подтверждено и вердикт QA успешен.
 
-When QA finds a real behavior defect, it returns requirement-linked evidence and a concrete repair recommendation to the builder. The orchestration layer then enforces `get_saved_draft -> save_draft -> publish_draft` and starts a fresh QA run against the repaired version. A prose-only builder response cannot accidentally terminate this handoff. Live exploration is bounded from the number of planned requirements and capped at 12 messages, repeated actions are rejected, and the subagent must finish with a structured pass/fail verdict. These are domain-independent loop controls; no recipe, benchmark, or other task-specific behavior is encoded in the agent.
+Когда QA находит реальный дефект поведения, он возвращает конструктору факты с привязкой к требованиям и конкретные рекомендации по исправлению. Слой оркестрации затем строго обеспечивает последовательность `get_saved_draft -> save_draft -> publish_draft` и запускает новый цикл QA для исправленной версии. Текстовый ответ конструктора не может случайно прервать этот процесс передачи управления. Живое тестирование ограничено числом запланированных требований и имеет жесткий лимит в 12 сообщений, повторяющиеся действия отклоняются, а субагент обязан завершить работу структурированным вердиктом пройдено/не пройдено (pass/fail). Это универсальные механизмы управления циклом, не зависящие от предметной области; в агенте нет захардкоженных рецептов, бенчмарков или специфичной для конкретных задач логики.
 
-A rejected or unavailable MCP call is returned to the model as factual tool feedback, allowing it to recover with one of the discovered tools instead of terminating the run. Drafts are saved to `debug/last_platform_payload.json`; responses go to `debug/last_platform_response.json`. Complete independent-QA evidence is stored in `debug/last_qa_verification.json` and in a versioned file under `debug/runs/`; the builder receives a compact `repairPacket` containing every failed issue and its full cited turns rather than a prose-only summary.
+Отклоненный или недоступный вызов MCP возвращается модели как фактологическая обратная связь от инструмента, что позволяет ей восстановиться с помощью одного из обнаруженных инструментов вместо завершения работы. Черновики сохраняются в `debug/last_platform_payload.json`, ответы — в `debug/last_platform_response.json`. Полные результаты независимой проверки QA сохраняются в `debug/last_qa_verification.json` и в версионированных файлах внутри `debug/runs/`; конструктор получает компактный `repairPacket`, содержащий описание всех выявленных проблем и точные цитаты реплик вместо обобщенного текстового описания.
 
-## Run
+## Запуск
 
 ```powershell
 python create_mts_agent.py --env-file ..\..\work\starter_pack_2\starter_pack\.env --dry-run "Create a helpful assistant for our product"
 python create_mts_agent.py --env-file ..\..\work\starter_pack_2\starter_pack\.env "Create a helpful assistant for our product"
 ```
 
-The first command never changes the platform. For the desktop GUI, set `MTS_AGENT_DIR` to this folder; its adapter already supplies provider settings and passes `--dry-run` when upload is disabled.
+Первая команда не вносит изменений на платформе. Для работы с десктопным GUI укажите `MTS_AGENT_DIR` на эту папку; адаптер самостоятельно передаст настройки провайдера и флаг `--dry-run`, если публикация отключена.
 
-## PyCharm: first safe run
+## PyCharm: первый безопасный запуск
 
-In the Run Configuration, choose `create_mts_agent.py` as the script and add the following to **Parameters**:
+В конфигурации запуска (Run Configuration) выберите `create_mts_agent.py` в качестве скрипта и укажите следующие **параметры** (Parameters):
 
 ```text
 --env-file C:\Users\User\Desktop\starter_pack\.env --check-config
 ```
 
-The command verifies that the required LLM URL, API key, and model are available without showing secrets or calling a provider. A successful check prints `"ready": true`. Then use a safe local draft run:
+Эта команда проверяет доступность необходимых URL LLM, API-ключа и модели без раскрытия секретов и без вызова провайдера. При успешной проверке выводится `"ready": true`. После этого запустите безопасную локальную генерацию черновика:
 
 ```text
 --env-file C:\Users\User\Desktop\starter_pack\.env --dry-run "Create a helpful FAQ bot for an online store"
 ```
 
-Only remove `--dry-run` when the draft run is satisfactory and you intend to publish to the MWS platform.
+Убирайте флаг `--dry-run` только тогда, когда результат генерации черновика вас устраивает и вы готовы опубликовать бота на платформе MWS.
 
-The startup log should show `MCP TOOL: platform_contract` before drafting: that proves the selected detachable skill pack, rather than a platform prompt embedded in the loop, supplied the contract.
+Перед началом формирования черновика в логе запуска должна появиться строка `MCP TOOL: platform_contract`: это подтверждает, что контракт был предоставлен выбранным внешним набором навыков, а не захардкоженным в цикл промптом платформы.
 
-The default emergency ceiling is 64 builder tool/repair turns (`--max-turns`); it is not a test-count limit or normal completion condition. `COTYPE_TIMEOUT` controls large builder requests and defaults to 600 seconds. Smaller QA requests use `MWS_VERIFIER_LLM_TIMEOUT` (120 seconds by default), with `MWS_VERIFIER_MAX_LIVE_TURNS` providing the hard exploration ceiling (12 by default). Set `MWS_VERIFICATION_MODE=legacy` only to restore the older inline verifier. When EVA provides `COTYPE_GENERATION_BASE_URL`, the agent uses it for model calls while preserving `COTYPE_BASE_URL` for the platform payload. The preliminary URL is explicitly marked as QA-pending; the ordinary final `Frontend URL:` line still means independent QA passed.
+Аварийный лимит по умолчанию составляет 64 шага инструментов/исправлений конструктора (`--max-turns`); это не ограничение количества тестов и не условие штатного завершения. Переменная `COTYPE_TIMEOUT` управляет таймаутом больших запросов конструктора (по умолчанию 600 секунд). Для более коротких QA-запросов используется `MWS_VERIFIER_LLM_TIMEOUT` (по умолчанию 120 секунд), а `MWS_VERIFIER_MAX_LIVE_TURNS` задает жесткий потолок диалоговых шагов (по умолчанию 12). Устанавливайте `MWS_VERIFICATION_MODE=legacy` только для возврата к старой встроенной схеме верификации. Когда EVA передает `COTYPE_GENERATION_BASE_URL`, агент использует его для обращений к модели, сохраняя `COTYPE_BASE_URL` для отправки конфигурации на платформу. Предварительный URL явно помечается как ожидающий проверки (QA pending); стандартная финальная строка `Frontend URL:` по-прежнему гарантирует, что независимая проверка QA пройдена успешно.
 
-## Detachable MCP tools
+## Подключаемые MCP-инструменты
 
-`mws_mcp/` is a dependency-free stdio MCP server. The loop discovers its tool schemas using `initialize` and `tools/list`; it contains no MWS route or tool registry. Use `MWS_MCP_COMMAND` to replace it with another MCP server. In GUI mode, keep `MTS_AGENT_DIR` pointed at this source directory so the MCP child process can load the selected package. MCP JSON-RPC uses ASCII escaping on the wire so a malformed model Unicode character cannot break the server protocol. `debug/last_run.json` records the run ID and its artifacts, so diagnostics do not accidentally pair a draft from one run with a response from another.
+`mws_mcp/` — автономный stdio MCP-сервер без внешних зависимостей. Цикл динамически определяет схемы инструментов через вызовы `initialize` и `tools/list`; сервер не содержит жестко зашитых маршрутов MWS или реестра инструментов. Для замены на другой MCP-сервер используйте переменную окружения `MWS_MCP_COMMAND`. В режиме GUI держите `MTS_AGENT_DIR` направленным на эту исходную директорию, чтобы дочерний процесс MCP мог загрузить требуемый пакет. JSON-RPC протокол MCP использует экранирование ASCII при передаче данных, исключая сбои протокола из-за некорректных Unicode-символов от модели. В `debug/last_run.json` фиксируются идентификатор запуска (run ID) и созданные артефакты, что предотвращает сопоставление черновика одного запуска с ответом другого при диагностике.
 
-## Tests
+## Тесты
 
 ```powershell
 $env:PYTHONPATH = (Get-Location)
 python -m unittest discover -s tests -v
 ```
 
-## Safety
+## Безопасность
 
-- `.env`, `debug/`, token files, and generated payloads are ignored.
-- Upload requires omitting `--dry-run`; validation happens before every write.
-- Updating an existing bot also requires a successful `inspect_existing_bot` call in the current MCP run; the runtime rejects publication otherwise.
-- During a create-and-repair run, repairs become new versions of the first created bot. A later publication is rejected until the latest published version has been run through the verifier.
-- The implementation contains general platform rules only—no benchmark-task instructions or task-specific templates.
+- Файлы `.env`, папка `debug/`, файлы токенов и сгенерированные полезные нагрузки (payloads) добавлены в `.gitignore`.
+- Для публикации на платформу требуется явное отсутствие флага `--dry-run`; валидация выполняется перед любой операцией записи.
+- Обновление существующего бота требует успешного выполнения вызова `inspect_existing_bot` в рамках текущего запуска MCP; в противном случае среда выполнения отклоняет публикацию.
+- В сценарии создания и исправления (create-and-repair) исправления публикуются как новые версии изначально созданного бота. Повторная публикация блокируется до тех пор, пока последняя опубликованная версия не пройдет проверку в верификаторе.
+- Реализация содержит исключительно универсальные платформенные правила — без специфичных шаблонов или инструкций под конкретные бенчмарки.
